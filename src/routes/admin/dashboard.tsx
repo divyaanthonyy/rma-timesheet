@@ -3,12 +3,11 @@ import { useState, useEffect } from 'react'
 import { createServerFn } from '@tanstack/react-start'
 import { exportAllApproved } from '../../utils/export'
 import { loadAllTimesheetStatuses, loadAllUsers, loadAllUserProjects, loadTotalHoursPerUser } from '../../db/queries'
+import { currentMonth } from '../../lib/month'
 
 export const Route = createFileRoute('/admin/dashboard')({
   component: AdminDashboard,
 })
-
-const MONTH = new Date().toISOString().slice(0, 7)
 
 const STATUS = {
   approved:  { label: 'Approved',      color: 'text-emerald-400 bg-emerald-900/30 border-emerald-800' },
@@ -21,21 +20,21 @@ function initials(name: string) {
   return name.split(' ').map((n) => n[0]).join('').slice(0, 2)
 }
 
-const fetchStatuses = createServerFn().handler(async () => {
-  return loadAllTimesheetStatuses(MONTH)
-})
+const fetchStatuses = createServerFn()
+  .validator((data: { month: string }) => data)
+  .handler(async ({ data }) => loadAllTimesheetStatuses(data.month))
 
 const fetchUsers = createServerFn().handler(async () => {
   return loadAllUsers()
 })
 
-const fetchAssignments = createServerFn().handler(async () => {
-  return loadAllUserProjects(MONTH)
-})
+const fetchAssignments = createServerFn()
+  .validator((data: { month: string }) => data)
+  .handler(async ({ data }) => loadAllUserProjects(data.month))
 
-const fetchHours = createServerFn().handler(async () => {
-  return loadTotalHoursPerUser(MONTH)
-})
+const fetchHours = createServerFn()
+  .validator((data: { month: string }) => data)
+  .handler(async ({ data }) => loadTotalHoursPerUser(data.month))
 
 const debugMonth = createServerFn().handler(async () => {
   return {
@@ -48,13 +47,16 @@ type User = { id: string; name: string; role: string; position: string; employee
 type Assignment = { userId: string; projectId: string; projectName: string }
 
 export default function AdminDashboard() {
+  const [month, setMonth] = useState('')
   const [statuses, setStatuses] = useState<Record<string, string>>({})
   const [users, setUsers] = useState<User[]>([])
   const [assignments, setAssignments] = useState<Assignment[]>([])
   const [hours, setHours] = useState<Record<string, number>>({})
 
   useEffect(() => {
-    fetchStatuses().then((rows) => {
+    const month = currentMonth()
+    setMonth(month)
+    fetchStatuses({ data: { month } }).then((rows) => {
       const map: Record<string, string> = {}
       for (const row of rows) map[row.userId] = row.status
       setStatuses(map)
@@ -62,12 +64,12 @@ export default function AdminDashboard() {
     fetchUsers().then((u) => setUsers(u as User[]))
     debugMonth().then((d) => console.log('SERVER MONTH:', d.month, '| full:', d.full))
 
-  fetchAssignments()
+  fetchAssignments({ data: { month } })
       .then((a) => {
         console.log('ASSIGNMENTS RESULT:', JSON.stringify(a))
         setAssignments(a as Assignment[])
       }).catch((err) => console.error('ASSIGNMENTS ERROR:', err?.message, err))
-    fetchHours().then((h) => {
+    fetchHours({ data: { month } }).then((h) => {
     console.log('hours from db:', h)
     setHours(h as Record<string, number>)
   })
@@ -93,9 +95,9 @@ export default function AdminDashboard() {
     <div>
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h1 className="text-white text-lg font-medium">{MONTH.replace('-', ' ')} — Submissions</h1>
+          <h1 className="text-white text-lg font-medium">{month.replace('-', ' ')} — Submissions</h1>
           <p className="text-gray-500 text-sm mt-0.5">
-            Working period: {MONTH.replace('-', ' ')}
+            Working period: {month.replace('-', ' ')}
           </p>
         </div>
         <button
@@ -110,7 +112,7 @@ export default function AdminDashboard() {
                   projects: e.projects,
                   entries: {},
                 })),
-              MONTH
+              month
             )
           }
           className="text-xs bg-amber-500 hover:bg-amber-400 text-gray-950 font-medium px-4 py-2 rounded-lg transition-colors"
