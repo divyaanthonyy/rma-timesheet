@@ -3,5 +3,17 @@
   "name": "tanstack-start-app",
   "compatibility_date": "2025-09-02",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry"
+  "main": "@tanstack/react-start/server-entry",
+  "vars": {
+    "TURSO_DATABASE_URL": "",
+    "BETTER_AUTH_URL": "",
+    "GOOGLE_CLIENT_ID": ""
+  },
+  "secrets": {
+    "required": [
+      "TURSO_AUTH_TOKEN",
+      "GOOGLE_CLIENT_SECRET",
+      "BETTER_AUTH_SECRET"
+    ]
+  }
 }
