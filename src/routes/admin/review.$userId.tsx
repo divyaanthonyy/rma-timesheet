@@ -2,9 +2,12 @@
 import { createFileRoute, Link, useParams } from '@tanstack/react-router'
 import { useState, useEffect } from 'react'
 import { createServerFn } from '@tanstack/react-start'
+import { getRequestHeaders } from '@tanstack/react-start/server'
+import { auth } from '../../lib/auth'
 import { exportSingleEngineer } from '../../utils/export'
-import { updateTimesheetStatus, loadTimesheetStatus, loadEntriesForMonth, loadUserProjects, getUserById } from '../../db/queries'
+import { updateTimesheetStatus, loadTimesheetStatus, loadEntriesForMonth, loadUserProjects, getUserById, loadTimesheetHistory, getUserByEmail } from '../../db/queries'
 import { currentMonth, monthMeta, monthLabel as fmtMonth } from '../../lib/month'
+import { formatHistoryTimestamp, getHistoryEventMeta } from '../../lib/timesheet-history'
 
 export const Route = createFileRoute('/admin/review/$userId')({
   component: ReviewPage,
@@ -24,22 +27,35 @@ const STATUS_LABELS: Record<Status, string> = {
   returned:  'Returned',
 }
 
+const getCurrentAdmin = createServerFn().handler(async () => {
+  const headers = getRequestHeaders()
+  const session = await auth.api.getSession({ headers })
+  if (!session) return null
+  return getUserByEmail(session.user.email)
+})
+
 const approveTimesheet = createServerFn()
-  .validator((data: { userId: string; month: string }) => data)
+  .validator((data: { userId: string; month: string; actorId: string; actorName: string }) => data)
   .handler(async ({ data }) => {
-    await updateTimesheetStatus(data.userId, data.month, 'approved')
+    await updateTimesheetStatus(data.userId, data.month, 'approved', undefined, { userId: data.actorId, name: data.actorName })
   })
 
 const returnTimesheet = createServerFn()
-  .validator((data: { userId: string; note: string; month: string }) => data)
+  .validator((data: { userId: string; note: string; month: string; actorId: string; actorName: string }) => data)
   .handler(async ({ data }) => {
-    await updateTimesheetStatus(data.userId, data.month, 'returned', data.note)
+    await updateTimesheetStatus(data.userId, data.month, 'returned', data.note, { userId: data.actorId, name: data.actorName })
   })
 
 const unapproveTimesheet = createServerFn()
+  .validator((data: { userId: string; month: string; actorId: string; actorName: string }) => data)
+  .handler(async ({ data }) => {
+    await updateTimesheetStatus(data.userId, data.month, 'submitted', undefined, { userId: data.actorId, name: data.actorName })
+  })
+
+const fetchHistory = createServerFn()
   .validator((data: { userId: string; month: string }) => data)
   .handler(async ({ data }) => {
-    await updateTimesheetStatus(data.userId, data.month, 'submitted')
+    return loadTimesheetHistory(data.userId, data.month)
   })
 
 const fetchTimesheetStatus = createServerFn()
@@ -74,6 +90,7 @@ function ReviewPage() {
   const [showReturnInput, setShowReturnInput] = useState(false)
   const [entries, setEntries] = useState<Record<string, Record<number, number>>>({})
   const [realProjects, setRealProjects] = useState<{ id: string; name: string }[]>([])
+  const [history, setHistory] = useState<Array<{ id: string; eventType: string; note: string | null; createdAt: string | null; performedByUserId: string | null; performedByName: string | null }>>([])
   // month is computed in the browser after mount — never during SSR.
   const [month, setMonth] = useState<string | null>(null)
 
@@ -106,6 +123,10 @@ function ReviewPage() {
 
     fetchEngineerProjects({ data: { userId, month } }).then((p) => {
       setRealProjects(p)
+    })
+
+    fetchHistory({ data: { userId, month } }).then((h) => {
+      setHistory(h)
     })
   }, [userId, month])
 
@@ -140,22 +161,31 @@ function ReviewPage() {
 
   async function handleApprove() {
     if (!month) return
-    await approveTimesheet({ data: { userId, month } })
+    const admin = await getCurrentAdmin()
+    await approveTimesheet({ data: { userId, month, actorId: admin?.id ?? '', actorName: admin?.name ?? 'Unknown' } })
     setStatus('approved')
     setShowReturnInput(false)
+    const h = await fetchHistory({ data: { userId, month } })
+    setHistory(h)
   }
 
   async function handleReturn() {
     if (!month) return
-    await returnTimesheet({ data: { userId, note: returnNote, month } })
+    const admin = await getCurrentAdmin()
+    await returnTimesheet({ data: { userId, note: returnNote, month, actorId: admin?.id ?? '', actorName: admin?.name ?? 'Unknown' } })
     setStatus('returned')
     setShowReturnInput(false)
+    const h = await fetchHistory({ data: { userId, month } })
+    setHistory(h)
   }
 
   async function handleUnapprove() {
     if (!month) return
-    await unapproveTimesheet({ data: { userId, month } })
+    const admin = await getCurrentAdmin()
+    await unapproveTimesheet({ data: { userId, month, actorId: admin?.id ?? '', actorName: admin?.name ?? 'Unknown' } })
     setStatus('submitted')
+    const h = await fetchHistory({ data: { userId, month } })
+    setHistory(h)
   }
 
   return (
@@ -354,8 +384,46 @@ function ReviewPage() {
               )}
             </tbody>
           </table>
+          </div>
         </div>
-      </div>
+
+        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mt-6">
+          <div className="px-4 py-3 border-b border-gray-800 bg-gray-800/40">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <p className="text-white text-sm font-medium">Submission history</p>
+                <p className="text-gray-500 text-xs">A timeline of submissions, approvals, and returns for this month.</p>
+              </div>
+              <span className="text-[10px] uppercase tracking-[0.25em] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-full px-2.5 py-1">
+                Activity
+              </span>
+            </div>
+          </div>
+
+          {history.length === 0 ? (
+            <div className="px-4 py-6 text-center">
+              <p className="text-gray-400 text-sm">No submissions this month</p>
+            </div>
+          ) : (
+            <div className="divide-y divide-gray-800">
+              {history.map((item) => {
+                const meta = getHistoryEventMeta(item.eventType as 'submitted' | 'resubmitted' | 'approved' | 'returned' | 'unapproved')
+                return (
+                  <div key={item.id} className="px-4 py-3 flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-white text-sm font-medium">{meta.title}</p>
+                      <p className="text-gray-500 text-xs mt-1">{meta.description}</p>
+                      {item.performedByName && (
+                        <p className="text-[11px] text-amber-400 mt-1">By {item.performedByName}</p>
+                      )}
+                    </div>
+                    <p className="text-gray-500 text-xs whitespace-nowrap">{formatHistoryTimestamp(item.createdAt)}</p>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
     </div>
   )
 }

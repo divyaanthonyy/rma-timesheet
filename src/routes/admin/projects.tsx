@@ -5,6 +5,8 @@ import {
   loadAllProjects,
   loadAllUsers,
   createProject,
+  updateProject,
+  deleteProject,
   assignProjectToUser,
   removeProjectAssignment,
   updateAssignmentDuration,
@@ -22,9 +24,21 @@ const fetchUsers = createServerFn().handler(async () => loadAllUsers())
 const fetchAllAssignments = createServerFn().handler(async () => loadAllUserProjectAssignments())
 
 const addProject = createServerFn()
-  .validator((data: { name: string; client: string }) => data)
+  .validator((data: { name: string; client: string; rfJobCode?: string | null; category?: string | null; startMonth?: string | null; endMonth?: string | null }) => data)
   .handler(async ({ data }) => {
-    await createProject({ id: nanoid(), name: data.name, client: data.client })
+    await createProject({ id: nanoid(), name: data.name, client: data.client, rfJobCode: data.rfJobCode, category: data.category, startMonth: data.startMonth, endMonth: data.endMonth })
+  })
+
+const updateProjectFn = createServerFn()
+  .validator((data: { id: string; name: string; client: string; rfJobCode?: string | null; category?: string | null; startMonth?: string | null; endMonth?: string | null }) => data)
+  .handler(async ({ data }) => {
+    await updateProject(data)
+  })
+
+const removeProjectFn = createServerFn()
+  .validator((data: { id: string }) => data)
+  .handler(async ({ data }) => {
+    await deleteProject(data.id)
   })
 
 const assignProject = createServerFn()
@@ -55,8 +69,8 @@ const updateDuration = createServerFn()
     await updateAssignmentDuration(data.userId, data.projectId, start, end)
   })
 
-type Project = { id: string; name: string; client: string | null; active: boolean | null; createdAt: string | null }
-type User = { id: string; name: string; employeeNumber: string; position: string; role: string; email: string; manDayRate: number; createdAt: string | null }
+type Project = { id: string; name: string; client: string | null; rfJobCode: string | null; category: string | null; startMonth: string | null; endMonth: string | null; active: boolean | null; createdAt: string | null }
+type User = { id: string; name: string; employeeNumber: string; position: string; role: string; email: string; manDayRate: number; isEngineer: boolean | null; createdAt: string | null }
 type Assignment = { userId: string; projectId: string; projectName: string; userName: string; startMonth: string; endMonth: string | null }
 
 export default function ProjectsPage() {
@@ -66,7 +80,11 @@ export default function ProjectsPage() {
   const [showForm, setShowForm] = useState(false)
   const [saving, setSaving] = useState(false)
   const [selectedProject, setSelectedProject] = useState<string | null>(null)
-  const [form, setForm] = useState({ name: '', client: '' })
+  const [editProject, setEditProject] = useState<Project | null>(null)
+  const [editForm, setEditForm] = useState({ name: '', client: '', rfJobCode: '', category: 'backlog', startMonth: '', endMonth: '' })
+  const [confirmDelete, setConfirmDelete] = useState<Project | null>(null)
+  const [filter, setFilter] = useState<'all' | 'backlog' | 'forecast'>('all')
+  const [form, setForm] = useState({ name: '', client: '', rfJobCode: '', category: 'backlog', startMonth: '', endMonth: '' })
   const [editUser, setEditUser] = useState<string | null>(null)
   const [startMonth, setStartMonth] = useState('')
   const [endMonth, setEndMonth] = useState('')
@@ -88,11 +106,27 @@ export default function ProjectsPage() {
   async function handleAddProject() {
     if (!form.name) return
     setSaving(true)
-    await addProject({ data: { name: form.name, client: form.client } })
+    await addProject({ data: { name: form.name, client: form.client, rfJobCode: form.rfJobCode || null, category: form.category, startMonth: form.startMonth || null, endMonth: form.endMonth || null } })
     await reload()
-    setForm({ name: '', client: '' })
+    setForm({ name: '', client: '', rfJobCode: '', category: 'backlog', startMonth: '', endMonth: '' })
     setShowForm(false)
     setSaving(false)
+  }
+
+  async function handleEditSave() {
+    if (!editProject || !editForm.name) return
+    await updateProjectFn({ data: { id: editProject.id, name: editForm.name, client: editForm.client, rfJobCode: editForm.rfJobCode || null, category: editForm.category, startMonth: editForm.startMonth || null, endMonth: editForm.endMonth || null } })
+    setEditProject(null)
+    setEditForm({ name: '', client: '', rfJobCode: '', category: 'backlog', startMonth: '', endMonth: '' })
+    await reload()
+  }
+
+  async function handleDeleteProject() {
+    if (!confirmDelete) return
+    await removeProjectFn({ data: { id: confirmDelete.id } })
+    setConfirmDelete(null)
+    if (selectedProject === confirmDelete.id) setSelectedProject(null)
+    await reload()
   }
 
   function getAssignment(userId: string, projectId: string) {
@@ -150,7 +184,8 @@ export default function ProjectsPage() {
     return name.split(' ').map((n) => n[0]).join('').slice(0, 2)
   }
 
-  const engineers = users.filter((u) => u.role === 'engineer')
+  const engineers = users.filter((u) => u.role === 'engineer' || u.isEngineer)
+  const filteredProjects = filter === 'all' ? projects : projects.filter((p) => p.category === filter)
   const activeProject = projects.find((p) => p.id === selectedProject)
 
   return (
@@ -158,14 +193,29 @@ export default function ProjectsPage() {
       <div className="flex items-start justify-between mb-6">
         <div>
           <h1 className="text-white text-lg font-medium">Projects</h1>
-          <p className="text-gray-500 text-sm mt-0.5">{projects.length} projects</p>
+          <p className="text-gray-500 text-sm mt-0.5">{filteredProjects.length} project{filteredProjects.length !== 1 ? 's' : ''}</p>
         </div>
-        <button
-          onClick={() => setShowForm((v) => !v)}
-          className="text-xs bg-amber-500 hover:bg-amber-400 text-gray-950 font-medium px-4 py-2 rounded-lg transition-colors"
-        >
-          + New project
-        </button>
+        <div className="flex items-center gap-2">
+          {(['all', 'backlog', 'forecast'] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setFilter(mode)}
+              className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                filter === mode
+                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                  : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-gray-300'
+              }`}
+            >
+              {mode === 'all' ? 'View All' : mode === 'backlog' ? 'Backlog & New Projects' : 'Forecast Projects'}
+            </button>
+          ))}
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className="text-xs bg-amber-500 hover:bg-amber-400 text-gray-950 font-medium px-4 py-1.5 rounded-lg transition-colors"
+          >
+            + New project
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -190,10 +240,48 @@ export default function ProjectsPage() {
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 outline-none focus:border-gray-500 transition-colors"
               />
             </div>
+            <div>
+              <label className="text-gray-500 text-xs mb-1.5 block">RF Job Code</label>
+              <input
+                value={form.rfJobCode}
+                onChange={(e) => setForm(p => ({ ...p, rfJobCode: e.target.value }))}
+                placeholder="RF-2026-001"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 outline-none focus:border-gray-500 transition-colors"
+              />
+            </div>
+            <div>
+              <label className="text-gray-500 text-xs mb-1.5 block">Category</label>
+              <select
+                value={form.category}
+                onChange={(e) => setForm(p => ({ ...p, category: e.target.value }))}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-gray-500 transition-colors"
+              >
+                <option value="backlog">Backlog & New Projects</option>
+                <option value="forecast">Forecast Projects</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-gray-500 text-xs mb-1.5 block">Start month</label>
+              <input
+                value={form.startMonth}
+                onChange={(e) => setForm(p => ({ ...p, startMonth: e.target.value }))}
+                placeholder="2026-01"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 outline-none focus:border-gray-500 transition-colors"
+              />
+            </div>
+            <div>
+              <label className="text-gray-500 text-xs mb-1.5 block">End month</label>
+              <input
+                value={form.endMonth}
+                onChange={(e) => setForm(p => ({ ...p, endMonth: e.target.value }))}
+                placeholder="2026-12 (blank = ongoing)"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 outline-none focus:border-gray-500 transition-colors"
+              />
+            </div>
           </div>
           <div className="flex gap-2 justify-end">
             <button
-              onClick={() => setShowForm(false)}
+              onClick={() => { setShowForm(false); setForm({ name: '', client: '', rfJobCode: '', category: 'backlog', startMonth: '', endMonth: '' }) }}
               className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded-lg border border-gray-700 transition-colors"
             >
               Cancel
@@ -209,42 +297,68 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-6">
-        <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+      <div className={`grid gap-6 ${activeProject ? 'grid-cols-2' : 'grid-cols-1'}`}>
+        <div className={`bg-gray-900 border rounded-xl overflow-hidden transition-colors ${
+          activeProject ? 'border-gray-800' : 'border-gray-700'
+        }`}>
           <div className="px-4 py-3 border-b border-gray-800">
             <p className="text-white text-sm font-medium">All projects</p>
-            <p className="text-gray-600 text-xs mt-0.5">Click a project to manage assignments</p>
+            <p className="text-gray-600 text-xs mt-0.5">{activeProject ? 'Click a project to manage assignments' : 'Select a project to manage engineers'}</p>
           </div>
           <div className="divide-y divide-gray-800">
-            {projects.length === 0 ? (
-              <p className="text-gray-600 text-sm px-4 py-6 text-center">No projects yet.</p>
+            {filteredProjects.length === 0 ? (
+              <p className="text-gray-600 text-sm px-4 py-6 text-center">{projects.length === 0 ? 'No projects yet.' : 'No projects match this filter.'}</p>
             ) : (
-              projects.map((p) => {
+              filteredProjects.map((p) => {
                 const assignedCount = assignments.filter((a) => a.projectId === p.id).length
+                const isSelected = selectedProject === p.id
                 return (
-                  <button
+                  <div
                     key={p.id}
-                    onClick={() => { setSelectedProject(p.id === selectedProject ? null : p.id); cancelEdit() }}
-                    className={`w-full text-left px-4 py-3 transition-colors ${
-                      selectedProject === p.id ? 'bg-gray-800' : 'hover:bg-gray-800/40'
+                    className={`group flex items-center justify-between px-4 py-3 transition-colors cursor-pointer ${
+                      isSelected
+                        ? 'bg-amber-900/20 border-l-2 border-amber-400'
+                        : 'hover:bg-gray-800/40 border-l-2 border-transparent'
                     }`}
+                    onClick={() => { setSelectedProject(isSelected ? null : p.id); cancelEdit() }}
                   >
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-white text-xs font-medium">{p.name}</p>
-                        <p className="text-gray-600 text-[10px] mt-0.5">{p.client ?? '—'}</p>
+                    <div className="w-full text-left">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className={`text-xs font-medium ${isSelected ? 'text-amber-400' : 'text-white'}`}>{p.name}</p>
+                          <p className="text-gray-600 text-[10px] mt-0.5">{p.client ?? '—'} {p.rfJobCode ? `· ${p.rfJobCode}` : ''}</p>
+                        </div>
+                        <span className="text-xs text-gray-400 bg-gray-800 border border-gray-700 px-2.5 py-0.5 rounded-full">
+                          {assignedCount} engineer{assignedCount !== 1 ? 's' : ''}
+                        </span>
                       </div>
-                      <span className="text-[10px] text-gray-500 bg-gray-800 border border-gray-700 px-2 py-0.5 rounded-full">
-                        {assignedCount} engineer{assignedCount !== 1 ? 's' : ''}
-                      </span>
                     </div>
-                  </button>
+                    <div className="flex items-center gap-1.5 ml-2 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setEditProject(p)
+                          setEditForm({ name: p.name, client: p.client ?? '', rfJobCode: p.rfJobCode ?? '', category: p.category ?? 'backlog', startMonth: p.startMonth ?? '', endMonth: p.endMonth ?? '' })
+                        }}
+                        className="text-[10px] text-gray-600 hover:text-white transition-colors shrink-0"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setConfirmDelete(p) }}
+                        className="text-[10px] text-gray-600 hover:text-red-400 transition-colors shrink-0"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
                 )
               })
             )}
           </div>
         </div>
 
+        {activeProject && (
         <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-gray-800">
             <p className="text-white text-sm font-medium">
@@ -342,7 +456,113 @@ export default function ProjectsPage() {
             )}
           </div>
         </div>
+        )}
       </div>
+
+      {confirmDelete && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 w-full max-w-sm">
+            <h3 className="text-white text-sm font-medium mb-2">Delete project</h3>
+            <p className="text-gray-400 text-sm mb-6">
+              Are you sure you want to delete <span className="text-white font-medium">{confirmDelete.name}</span>?
+              This will also remove all engineer assignments and timesheet entries for this project.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded-lg border border-gray-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteProject}
+                className="text-xs bg-red-900/50 hover:bg-red-900 text-red-400 px-4 py-2 rounded-lg border border-red-800 transition-colors"
+              >
+                Yes, delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {editProject && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 w-full max-w-lg">
+            <h3 className="text-white text-sm font-medium mb-4">Edit project</h3>
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div className="col-span-2">
+                <label className="text-gray-500 text-xs mb-1.5 block">Project name</label>
+                <input
+                  value={editForm.name}
+                  onChange={(e) => setEditForm(p => ({ ...p, name: e.target.value }))}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-gray-500 transition-colors"
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="text-gray-500 text-xs mb-1.5 block">Client</label>
+                <input
+                  value={editForm.client}
+                  onChange={(e) => setEditForm(p => ({ ...p, client: e.target.value }))}
+                  placeholder="SEDA"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 outline-none focus:border-gray-500 transition-colors"
+                />
+              </div>
+              <div>
+                <label className="text-gray-500 text-xs mb-1.5 block">RF Job Code</label>
+                <input
+                  value={editForm.rfJobCode}
+                  onChange={(e) => setEditForm(p => ({ ...p, rfJobCode: e.target.value }))}
+                  placeholder="RF-2026-001"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 outline-none focus:border-gray-500 transition-colors"
+                />
+              </div>
+              <div>
+                <label className="text-gray-500 text-xs mb-1.5 block">Category</label>
+                <select
+                  value={editForm.category}
+                  onChange={(e) => setEditForm(p => ({ ...p, category: e.target.value }))}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-gray-500 transition-colors"
+                >
+                  <option value="backlog">Backlog & New Projects</option>
+                  <option value="forecast">Forecast Projects</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-gray-500 text-xs mb-1.5 block">Start month</label>
+                <input
+                  value={editForm.startMonth}
+                  onChange={(e) => setEditForm(p => ({ ...p, startMonth: e.target.value }))}
+                  placeholder="2026-01"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 outline-none focus:border-gray-500 transition-colors"
+                />
+              </div>
+              <div>
+                <label className="text-gray-500 text-xs mb-1.5 block">End month</label>
+                <input
+                  value={editForm.endMonth}
+                  onChange={(e) => setEditForm(p => ({ ...p, endMonth: e.target.value }))}
+                  placeholder="2026-12 (blank = ongoing)"
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-600 outline-none focus:border-gray-500 transition-colors"
+                />
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => { setEditProject(null); setEditForm({ name: '', client: '', rfJobCode: '', category: 'backlog', startMonth: '', endMonth: '' }) }}
+                className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded-lg border border-gray-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleEditSave}
+                className="text-xs bg-amber-500 hover:bg-amber-400 text-gray-950 font-medium px-4 py-2 rounded-lg transition-colors"
+              >
+                Save changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

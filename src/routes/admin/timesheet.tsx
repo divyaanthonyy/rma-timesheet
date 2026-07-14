@@ -1,19 +1,17 @@
-/* eslint-disable @typescript-eslint/no-unnecessary-condition */
 import { createFileRoute } from '@tanstack/react-router'
 import { useState, useEffect, useRef } from 'react'
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { auth } from '../../lib/auth'
-import { loadEntriesForMonth, loadUserProjects, upsertEntry, updateTimesheetStatus, loadTimesheetStatus, getUserByEmail, loadTimesheetHistory } from '../../db/queries'
+import { loadEntriesForMonth, loadUserProjects, upsertEntry, updateTimesheetStatus, loadTimesheetStatus, loadTimesheetHistory, getUserByEmail } from '../../db/queries'
 import { formatHistoryTimestamp, getHistoryEventMeta } from '../../lib/timesheet-history'
 
-export const Route = createFileRoute('/engineer/timesheet')({
-  component: TimesheetPage,
+export const Route = createFileRoute('/admin/timesheet')({
+  component: AdminTimesheetPage,
 })
 
-// Dynamic date calculations
 const now = new Date()
-const MONTH = now.toISOString().slice(0, 7) // YYYY-MM format
+const MONTH = now.toISOString().slice(0, 7)
 const YEAR = now.getFullYear()
 const MONTH_INDEX = now.getMonth()
 
@@ -29,13 +27,9 @@ const getWeekends = (year: number, month: number) => {
   return weekends
 }
 
-const DAYS = Array.from(
-  { length: new Date(YEAR, MONTH_INDEX + 1, 0).getDate() },
-  (_, i) => i + 1
-)
+const DAYS = Array.from({ length: new Date(YEAR, MONTH_INDEX + 1, 0).getDate() }, (_, i) => i + 1)
 const WEEKENDS = getWeekends(YEAR, MONTH_INDEX)
 
-// Server Functions
 const getCurrentUser = createServerFn().handler(async () => {
   const headers = getRequestHeaders()
   const session = await auth.api.getSession({ headers })
@@ -45,61 +39,41 @@ const getCurrentUser = createServerFn().handler(async () => {
 
 const fetchEntries = createServerFn()
   .validator((data: { userId: string }) => data)
-  .handler(async ({ data }) => {
-    return loadEntriesForMonth(data.userId, MONTH)
-  })
+  .handler(async ({ data }) => loadEntriesForMonth(data.userId, MONTH))
 
 const fetchProjects = createServerFn()
   .validator((data: { userId: string }) => data)
-  .handler(async ({ data }) => {
-    return loadUserProjects(data.userId, MONTH)
-  })
+  .handler(async ({ data }) => loadUserProjects(data.userId, MONTH))
 
 const fetchStatus = createServerFn()
   .validator((data: { userId: string }) => data)
-  .handler(async ({ data }) => {
-    return loadTimesheetStatus(data.userId, MONTH)
-  })
-
-const saveEntry = createServerFn()
-  .validator((data: { userId: string; projectId: string; date: string; hours: number }) => data)
-  .handler(async ({ data }) => {
-    await upsertEntry(data.userId, data.projectId, data.date, data.hours)
-  })
+  .handler(async ({ data }) => loadTimesheetStatus(data.userId, MONTH))
 
 const fetchHistory = createServerFn()
   .validator((data: { userId: string; month: string }) => data)
-  .handler(async ({ data }) => {
-    return loadTimesheetHistory(data.userId, data.month)
-  })
+  .handler(async ({ data }) => loadTimesheetHistory(data.userId, data.month))
 
-const submitTimesheetFn = createServerFn()
+const saveEntry = createServerFn()
+  .validator((data: { userId: string; projectId: string; date: string; hours: number }) => data)
+  .handler(async ({ data }) => upsertEntry(data.userId, data.projectId, data.date, data.hours))
+
+const approveTimesheetFn = createServerFn()
   .validator((d: { userId: string; month: string }) => d)
-  .handler(async ({ data }) => {
-    await updateTimesheetStatus(data.userId, data.month, 'submitted')
-  })
+  .handler(async ({ data }) => updateTimesheetStatus(data.userId, data.month, 'approved'))
 
-type TimesheetStatus = 'draft' | 'submitted' | 'approved' | 'returned'
+const unapproveTimesheetFn = createServerFn()
+  .validator((d: { userId: string; month: string }) => d)
+  .handler(async ({ data }) => updateTimesheetStatus(data.userId, data.month, 'submitted'))
 
-type CurrentUser = {
-  id: string
-  name: string
-  email: string
-  employeeNumber: string
-  position: string
-  role: string
-  manDayRate: number
-  createdAt: string | null
-}
+type TimesheetStatus = 'draft' | 'approved'
 
-export default function TimesheetPage() {
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
+export default function AdminTimesheetPage() {
+  const [currentUser, setCurrentUser] = useState<{ id: string; name: string; employeeNumber: string; isEngineer: boolean } | null>(null)
   const [loading, setLoading] = useState(true)
   const [projects, setProjects] = useState<{ id: string; name: string }[]>([])
   const [entries, setEntries] = useState<Record<string, Record<number, number>>>({})
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'error'>('saved')
   const [timesheetStatus, setTimesheetStatus] = useState<TimesheetStatus>('draft')
-  const [returnNote, setReturnNote] = useState<string | null>(null)
   const [history, setHistory] = useState<Array<{ id: string; eventType: string; note: string | null; createdAt: string | null; performedByUserId: string | null; performedByName: string | null }>>([])
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -107,19 +81,17 @@ export default function TimesheetPage() {
     const loadData = async () => {
       try {
         const user = await getCurrentUser()
-        if (!user) {
-          window.location.href = '/login?error=unauthorized'
-          return
-        }
-        setCurrentUser(user as CurrentUser)
-        const userId = user.id
+        if (!user) { window.location.href = '/login?error=unauthorized'; return }
+        setCurrentUser(user as { id: string; name: string; employeeNumber: string; isEngineer: boolean })
 
-        // Load all data in parallel
+        if (!user.isEngineer) { setLoading(false); return }
+
+        const userId = user.id
         const [projectsData, entriesData, statusData, historyData] = await Promise.all([
           fetchProjects({ data: { userId } }),
           fetchEntries({ data: { userId } }),
           fetchStatus({ data: { userId } }),
-          fetchHistory({ data: { userId, month: MONTH } })
+          fetchHistory({ data: { userId, month: MONTH } }),
         ])
 
         setProjects(projectsData)
@@ -134,16 +106,12 @@ export default function TimesheetPage() {
 
         if (statusData) {
           setTimesheetStatus(statusData.status as TimesheetStatus)
-          setReturnNote(statusData.returnNote)
         }
         setHistory(historyData)
-      } catch (error) {
-        console.error('Failed to load user data:', error)
       } finally {
         setLoading(false)
       }
     }
-
     loadData()
   }, [])
 
@@ -159,10 +127,7 @@ export default function TimesheetPage() {
         return updated
       })
     } else {
-      setEntries(prev => ({
-        ...prev,
-        [projectId]: { ...prev[projectId], [day]: clamped }
-      }))
+      setEntries(prev => ({ ...prev, [projectId]: { ...prev[projectId], [day]: clamped } }))
     }
 
     setSaveStatus('unsaved')
@@ -173,17 +138,20 @@ export default function TimesheetPage() {
         const date = `${MONTH}-${String(day).padStart(2, '0')}`
         await saveEntry({ data: { userId: currentUser.id, projectId, date, hours: clamped } })
         setSaveStatus('saved')
-      } catch {
-        setSaveStatus('error')
-      }
+      } catch { setSaveStatus('error') }
     }, 600)
   }
 
-  async function handleSubmit() {
+  async function handleApprove() {
     if (!currentUser) return
-    await submitTimesheetFn({ data: { userId: currentUser.id, month: MONTH } })
-    setTimesheetStatus('submitted')
-    setReturnNote(null)
+    await approveTimesheetFn({ data: { userId: currentUser.id, month: MONTH } })
+    setTimesheetStatus('approved')
+  }
+
+  async function handleUnapprove() {
+    if (!currentUser) return
+    await unapproveTimesheetFn({ data: { userId: currentUser.id, month: MONTH } })
+    setTimesheetStatus('draft')
   }
 
   function getDayTotal(day: number) {
@@ -195,45 +163,32 @@ export default function TimesheetPage() {
   }
 
   const totalHours = projects.reduce((sum, p) => sum + getProjectTotal(p.id), 0)
-  const workedDays = DAYS.filter((d) => !WEEKENDS.includes(d) && getDayTotal(d) > 0).length
-  const avgHours = workedDays > 0 ? (totalHours / workedDays).toFixed(1) : '0'
-  
-  // Safe top project calculation
-  const topProject = projects.length > 0
-    ? projects.reduce((a, b) => getProjectTotal(a.id) >= getProjectTotal(b.id) ? a : b, projects[0]).name
-    : '—'
-  
+  const topProject = projects.length > 0 ? projects.reduce((a, b) => getProjectTotal(a.id) >= getProjectTotal(b.id) ? a : b, projects[0]).name : '—'
   const today = new Date().getDate()
-  const lastDay = new Date(YEAR, MONTH_INDEX + 1, 0).getDate()
-  const daysLeft = Math.max(0, lastDay - today)
-  const isLocked = timesheetStatus === 'submitted' || timesheetStatus === 'approved'
+  const isLocked = timesheetStatus === 'approved'
 
   const STATUS_BADGE: Record<TimesheetStatus, string> = {
-    draft:     'text-gray-400 bg-gray-800 border-gray-700',
-    submitted: 'text-amber-400 bg-amber-500/10 border-amber-500/20',
-    approved:  'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
-    returned:  'text-red-400 bg-red-500/10 border-red-500/20',
+    draft:    'text-gray-400 bg-gray-800 border-gray-700',
+    approved: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
   }
 
   const STATUS_LABEL: Record<TimesheetStatus, string> = {
-    draft:     'Draft',
-    submitted: 'Submitted',
-    approved:  'Approved',
-    returned:  'Returned — action required',
+    draft:    'Draft',
+    approved: 'Approved',
   }
 
   if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <p className="text-gray-500 text-sm">Loading your timesheet...</p>
-      </div>
-    )
+    return <p className="text-gray-500 text-sm">Loading your timesheet...</p>
   }
 
   if (!currentUser) {
+    return <p className="text-gray-500 text-sm">Redirecting...</p>
+  }
+
+  if (!currentUser.isEngineer) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <p className="text-gray-500 text-sm">Redirecting...</p>
+      <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <p className="text-gray-400 text-sm">You do not have engineer timesheet access. Contact an admin to enable it.</p>
       </div>
     )
   }
@@ -251,53 +206,29 @@ export default function TimesheetPage() {
           <span className={`text-xs border px-3 py-1 rounded-full ${STATUS_BADGE[timesheetStatus]}`}>
             {STATUS_LABEL[timesheetStatus]}
           </span>
-          {(timesheetStatus === 'draft' || timesheetStatus === 'returned') && (
-            <button
-              onClick={handleSubmit}
-              className="text-xs bg-amber-500 hover:bg-amber-400 text-gray-950 font-medium px-3 py-1.5 rounded-lg transition-colors"
-            >
-              {timesheetStatus === 'returned' ? 'Resubmit →' : 'Submit for approval →'}
+          {!isLocked ? (
+            <button onClick={handleApprove} className="text-xs bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-3 py-1.5 rounded-lg transition-colors">
+              Approve ✓
             </button>
-          )}
-          {isLocked && (
-            <button
-              disabled
-              className="text-xs bg-gray-700 text-gray-500 cursor-not-allowed font-medium px-3 py-1.5 rounded-lg"
-            >
-              {timesheetStatus === 'approved' ? 'Approved ✓' : 'Submitted ✓'}
+          ) : (
+            <button onClick={handleUnapprove} className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-3 py-1.5 rounded-lg border border-gray-700 transition-colors">
+              Unapprove
             </button>
           )}
         </div>
       </div>
 
-      {timesheetStatus === 'returned' && returnNote && (
-        <div className="bg-red-950/30 border border-red-900/50 rounded-xl p-4 mb-6 flex items-start gap-3">
-          <span className="text-red-400 text-xs mt-0.5">↩</span>
-          <div>
-            <p className="text-red-400 text-xs font-medium mb-1">Returned by admin — please review and resubmit</p>
-            <p className="text-red-300 text-sm">{returnNote}</p>
-          </div>
-        </div>
-      )}
-
-      <div className="grid grid-cols-6 gap-3 mb-6">
+      <div className="grid grid-cols-3 gap-3 mb-6">
         {[
-          { label: 'Total hours',         value: `${totalHours}h` },
-          { label: 'Man-days',            value: (totalHours / 8).toFixed(1) },
-          { label: 'Avg hrs / day',       value: `${avgHours}h` },
-          { label: 'Top project',         value: topProject },
-          { label: 'Days logged',         value: workedDays },
-          { label: 'Days left to submit', value: daysLeft },
+          { label: 'Total hours', value: `${totalHours}h` },
+          { label: 'Man-days',    value: (totalHours / 8).toFixed(1) },
+          { label: 'Top project', value: topProject },
         ].map((s) => (
-          <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-            <p className="text-gray-500 text-xs mb-1">{s.label}</p>
-            <p className="text-white text-xl font-medium">{s.value}</p>
+          <div key={s.label} className="bg-gray-900 border border-gray-800 rounded-xl p-3">
+            <p className="text-gray-500 text-[10px] mb-0.5">{s.label}</p>
+            <p className="text-white text-base font-medium">{s.value}</p>
           </div>
         ))}
-      </div>
-
-      <div className="mb-3">
-        <p className="text-gray-500 text-xs uppercase tracking-widest">Projects</p>
       </div>
 
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
@@ -315,18 +246,9 @@ export default function TimesheetPage() {
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr className="bg-gray-800/50">
-                <th className="text-left text-gray-400 font-normal px-4 py-2 w-32 sticky left-0 bg-gray-800/50">
-                  Project
-                </th>
+                <th className="text-left text-gray-400 font-normal px-4 py-2 w-32 sticky left-0 bg-gray-800/50">Project</th>
                 {DAYS.map((d) => (
-                  <th
-                    key={d}
-                    className={`text-center font-normal py-2 px-1 min-w-[28px] ${
-                      WEEKENDS.includes(d) ? 'text-gray-700' : 'text-gray-400'
-                    } ${d === today ? 'text-amber-400' : ''}`}
-                  >
-                    {d}
-                  </th>
+                  <th key={d} className={`text-center font-normal py-2 px-1 min-w-[28px] ${WEEKENDS.includes(d) ? 'text-gray-700' : 'text-gray-400'} ${d === today ? 'text-amber-400' : ''}`}>{d}</th>
                 ))}
                 <th className="text-center text-gray-400 font-normal px-3 py-2 w-14">Total</th>
               </tr>
@@ -334,14 +256,7 @@ export default function TimesheetPage() {
             <tbody>
               {projects.map((project, pi) => (
                 <tr key={project.id} className="border-t border-gray-800 hover:bg-gray-800/20">
-                  <td
-                    className={`px-4 py-1.5 font-medium sticky left-0 bg-gray-900 ${
-                      pi === 0 ? 'text-emerald-400' :
-                      pi === 1 ? 'text-purple-400' :
-                      pi === 2 ? 'text-blue-400' :
-                      'text-amber-400'
-                    }`}
-                  >
+                  <td className={`px-4 py-1.5 font-medium sticky left-0 bg-gray-900 ${pi === 0 ? 'text-emerald-400' : pi === 1 ? 'text-purple-400' : pi === 2 ? 'text-blue-400' : 'text-amber-400'}`}>
                     {project.name}
                   </td>
                   {DAYS.map((d) => {
@@ -353,48 +268,29 @@ export default function TimesheetPage() {
                           <div className="text-center py-1.5 px-0.5 bg-gray-800/30 text-gray-700" />
                         ) : (
                           <input
-                            type="number"
-                            min={0}
-                            max={8}
+                            type="number" min={0} max={8}
                             value={val ?? ''}
                             onChange={(e) => handleChange(project.id, d, e.target.value)}
                             placeholder="—"
                             disabled={isLocked}
                             className={`w-full text-center py-1.5 px-0.5 bg-transparent text-xs outline-none focus:bg-gray-800 rounded transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
-                              isLocked
-                                ? 'text-gray-600 cursor-not-allowed'
-                                : val
-                                ? pi === 0 ? 'text-emerald-300'
-                                : pi === 1 ? 'text-purple-300'
-                                : pi === 2 ? 'text-blue-300'
-                                : 'text-amber-300'
-                                : 'text-gray-700'
+                              isLocked ? 'text-gray-600 cursor-not-allowed' : val ? pi === 0 ? 'text-emerald-300' : pi === 1 ? 'text-purple-300' : pi === 2 ? 'text-blue-300' : 'text-amber-300' : 'text-gray-700'
                             }`}
                           />
                         )}
                       </td>
                     )
                   })}
-                  <td className="text-center text-white font-medium bg-gray-800/40 px-3">
-                    {getProjectTotal(project.id)}
-                  </td>
+                  <td className="text-center text-white font-medium bg-gray-800/40 px-3">{getProjectTotal(project.id)}</td>
                 </tr>
               ))}
-
               <tr className="border-t border-gray-700 bg-gray-800/30">
-                <td className="px-4 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider sticky left-0 bg-gray-800/30">
-                  Daily total
-                </td>
+                <td className="px-4 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider sticky left-0 bg-gray-800/30">Daily total</td>
                 {DAYS.map((d) => {
                   const total = getDayTotal(d)
                   const isWeekend = WEEKENDS.includes(d)
                   return (
-                    <td
-                      key={d}
-                      className={`text-center py-1.5 font-medium ${
-                        isWeekend ? 'text-gray-700' : total > 0 ? 'text-white' : 'text-gray-700'
-                      }`}
-                    >
+                    <td key={d} className={`text-center py-1.5 font-medium ${isWeekend ? 'text-gray-700' : total > 0 ? 'text-white' : 'text-gray-700'}`}>
                       {isWeekend ? '' : total > 0 ? total : '—'}
                     </td>
                   )
@@ -420,16 +316,11 @@ export default function TimesheetPage() {
               <p className="text-white text-sm font-medium">Submission history</p>
               <p className="text-gray-500 text-xs">A timeline of submissions, approvals, and returns for this month.</p>
             </div>
-            <span className="text-[10px] uppercase tracking-[0.25em] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-full px-2.5 py-1">
-              Activity
-            </span>
+            <span className="text-[10px] uppercase tracking-[0.25em] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-full px-2.5 py-1">Activity</span>
           </div>
         </div>
-
         {history.length === 0 ? (
-          <div className="px-4 py-6 text-center">
-            <p className="text-gray-400 text-sm">No submissions this month</p>
-          </div>
+          <div className="px-4 py-6 text-center"><p className="text-gray-400 text-sm">No submissions this month</p></div>
         ) : (
           <div className="divide-y divide-gray-800">
             {history.map((item) => {
@@ -439,9 +330,7 @@ export default function TimesheetPage() {
                   <div>
                     <p className="text-white text-sm font-medium">{meta.title}</p>
                     <p className="text-gray-500 text-xs mt-1">{meta.description}</p>
-                    {item.performedByName && (
-                      <p className="text-[11px] text-amber-400 mt-1">By {item.performedByName}</p>
-                    )}
+                    {item.performedByName && <p className="text-[11px] text-amber-400 mt-1">By {item.performedByName}</p>}
                   </div>
                   <p className="text-gray-500 text-xs whitespace-nowrap">{formatHistoryTimestamp(item.createdAt)}</p>
                 </div>

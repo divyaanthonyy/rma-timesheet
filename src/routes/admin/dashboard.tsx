@@ -1,8 +1,10 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useState, useEffect } from 'react'
 import { createServerFn } from '@tanstack/react-start'
+import { getRequestHeaders } from '@tanstack/react-start/server'
+import { auth } from '../../lib/auth'
 import { exportAllApproved } from '../../utils/export'
-import { loadAllTimesheetStatuses, loadAllUsers, loadAllUserProjects, loadTotalHoursPerUser } from '../../db/queries'
+import { loadAllTimesheetStatuses, loadAllUsers, loadAllUserProjects, loadTotalHoursPerUser, getUserByEmail } from '../../db/queries'
 import { currentMonth } from '../../lib/month'
 
 export const Route = createFileRoute('/admin/dashboard')({
@@ -36,6 +38,13 @@ const fetchHours = createServerFn()
   .validator((data: { month: string }) => data)
   .handler(async ({ data }) => loadTotalHoursPerUser(data.month))
 
+const getCurrentAdmin = createServerFn().handler(async () => {
+  const headers = getRequestHeaders()
+  const session = await auth.api.getSession({ headers })
+  if (!session) return null
+  return getUserByEmail(session.user.email)
+})
+
 const debugMonth = createServerFn().handler(async () => {
   return {
     month: new Date().toISOString().slice(0, 7),
@@ -43,7 +52,7 @@ const debugMonth = createServerFn().handler(async () => {
   }
 })
 
-type User = { id: string; name: string; role: string; position: string; employeeNumber: string; email: string; manDayRate: number; createdAt: string | null }
+type User = { id: string; name: string; role: string; position: string; employeeNumber: string; email: string; manDayRate: number; isEngineer: boolean | null; createdAt: string | null }
 type Assignment = { userId: string; projectId: string; projectName: string }
 
 export default function AdminDashboard() {
@@ -52,10 +61,12 @@ export default function AdminDashboard() {
   const [users, setUsers] = useState<User[]>([])
   const [assignments, setAssignments] = useState<Assignment[]>([])
   const [hours, setHours] = useState<Record<string, number>>({})
+  const [currentAdmin, setCurrentAdmin] = useState<{ id: string; name: string } | null>(null)
 
   useEffect(() => {
     const month = currentMonth()
     setMonth(month)
+    getCurrentAdmin().then((u) => { if (u) setCurrentAdmin(u as { id: string; name: string }) })
     fetchStatuses({ data: { month } }).then((rows) => {
       const map: Record<string, string> = {}
       for (const row of rows) map[row.userId] = row.status
@@ -77,7 +88,12 @@ export default function AdminDashboard() {
   }, [])
 
   const engineers = users
-    .filter((u) => u.role === 'engineer')
+    .filter((u) => u.role === 'engineer' || u.isEngineer)
+    .sort((a, b) => {
+      if (currentAdmin && a.id === currentAdmin.id) return -1
+      if (currentAdmin && b.id === currentAdmin.id) return 1
+      return 0
+    })
     .map((u) => ({
       ...u,
       status: statuses[u.id] ?? 'pending',
@@ -89,7 +105,7 @@ export default function AdminDashboard() {
 
   const approved  = engineers.filter((e) => e.status === 'approved').length
   const submitted = engineers.filter((e) => e.status === 'submitted').length
-  const pending   = engineers.filter((e) => e.status === 'pending').length
+  const pending   = engineers.filter((e) => e.status === 'pending' || e.status === 'draft').length
 
   return (
     <div>
@@ -192,17 +208,26 @@ export default function AdminDashboard() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right">
-                      <Link
-                        to="/admin/review/$userId"
-                        params={{ userId: eng.id }}
-                        className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                          eng.status === 'pending'
-                            ? 'text-gray-600 border-gray-800 cursor-not-allowed pointer-events-none'
-                            : 'text-gray-300 border-gray-700 hover:bg-gray-700'
-                        }`}
-                      >
-                        {eng.status === 'approved' ? 'View' : eng.status === 'pending' ? '—' : 'Review'}
-                      </Link>
+                      {currentAdmin && eng.id === currentAdmin.id ? (
+                        <Link
+                          to="/admin/timesheet"
+                          className="text-xs px-3 py-1.5 rounded-lg border border-amber-700 text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 transition-colors"
+                        >
+                          Edit
+                        </Link>
+                      ) : (
+                        <Link
+                          to="/admin/review/$userId"
+                          params={{ userId: eng.id }}
+                          className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                            eng.status === 'pending'
+                              ? 'text-gray-600 border-gray-800 cursor-not-allowed pointer-events-none'
+                              : 'text-gray-300 border-gray-700 hover:bg-gray-700'
+                          }`}
+                        >
+                          {eng.status === 'approved' ? 'View' : eng.status === 'pending' ? '—' : 'Review'}
+                        </Link>
+                      )}
                     </td>
                   </tr>
                 )

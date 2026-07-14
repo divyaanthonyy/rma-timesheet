@@ -54,9 +54,35 @@ function buildSheet(engineers: EngineerData[], month: string) {
   return rows
 }
 
+function styleSheet(ws: XLSX.WorkSheet, totalCols: number) {
+  const colWidths: Array<{ wch: number }> = []
+
+  for (let c = 0; c < totalCols; c++) {
+    let maxLen = 10
+    for (let r = 0; r < (ws['!ref'] ? XLSX.utils.decode_range(ws['!ref']).e.r + 1 : 1); r++) {
+      const addr = XLSX.utils.encode_cell({ r, c })
+      const cell = ws[addr]
+      const val = cell ? String(cell.v ?? '') : ''
+      if (r === 0) {
+        if (!cell) {
+          ws[addr] = { t: 's', v: '', s: { font: { bold: true } } }
+        } else {
+          cell.s = { ...(cell.s || {}), font: { bold: true } }
+        }
+      }
+      maxLen = Math.max(maxLen, val.length + 2)
+    }
+    colWidths.push({ wch: Math.min(maxLen, 30) })
+  }
+
+  ws['!cols'] = colWidths
+  ws['!rows'] = [{ hpx: 28 }]
+}
+
 export function exportSingleEngineer(engineer: EngineerData, month: string) {
   const rows = buildSheet([engineer], month)
   const ws = XLSX.utils.aoa_to_sheet(rows)
+  styleSheet(ws, rows[0].length)
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, engineer.name.slice(0, 31))
   XLSX.writeFile(wb, `timesheet_${engineer.id}_${month}.xlsx`)
@@ -65,6 +91,7 @@ export function exportSingleEngineer(engineer: EngineerData, month: string) {
 export function exportAllApproved(engineers: EngineerData[], month: string) {
   const rows = buildSheet(engineers, month)
   const ws = XLSX.utils.aoa_to_sheet(rows)
+  styleSheet(ws, rows[0].length)
   const wb = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(wb, ws, `All Engineers ${month}`)
   XLSX.writeFile(wb, `timesheet_consolidated_${month}.xlsx`)

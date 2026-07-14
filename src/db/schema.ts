@@ -11,6 +11,8 @@ export const users = sqliteTable('users', {
   role: text('role').notNull().default('engineer'),
   manDayRate: real('man_day_rate').notNull().default(0),
   email: text('email').notNull().unique(),
+  canApprove: integer('can_approve', { mode: 'boolean' }).notNull().default(false),
+  isEngineer: integer('is_engineer', { mode: 'boolean' }).notNull().default(false),
   createdAt: text('created_at').default(sql`(current_timestamp)`),
 })
 
@@ -18,6 +20,10 @@ export const projects = sqliteTable('projects', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   client: text('client'),
+  rfJobCode: text('rf_job_code'),
+  category: text('category').notNull().default('backlog'),
+  startMonth: text('start_month'),
+  endMonth: text('end_month'),
   active: integer('active', { mode: 'boolean' }).notNull().default(true),
   createdAt: text('created_at').default(sql`(current_timestamp)`),
 })
@@ -47,6 +53,17 @@ export const timesheets = sqliteTable('timesheets', {
   returnNote: text('return_note'),
   submittedAt: text('submitted_at'),
   approvedAt: text('approved_at'),
+  createdAt: text('created_at').default(sql`(current_timestamp)`),
+})
+
+export const timesheetHistory = sqliteTable('timesheet_history', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  month: text('month').notNull(),
+  eventType: text('event_type').notNull(),
+  note: text('note'),
+  performedByUserId: text('performed_by_user_id'),
+  performedByName: text('performed_by_name'),
   createdAt: text('created_at').default(sql`(current_timestamp)`),
 })
 
