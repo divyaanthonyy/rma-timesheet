@@ -5,7 +5,7 @@ import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { auth } from '../../lib/auth'
 import { exportSingleEngineer } from '../../utils/export'
-import { updateTimesheetStatus, loadTimesheetStatus, loadEntriesForMonth, loadUserProjects, getUserById, loadTimesheetHistory, getUserByEmail } from '../../db/queries'
+import { updateTimesheetStatus, loadTimesheetStatus, loadEntriesForMonth, loadUserProjects, getUserById, loadTimesheetHistory, getUserByEmail, loadLeaveDaysForMonth } from '../../db/queries'
 import { currentMonth, monthMeta, monthLabel as fmtMonth } from '../../lib/month'
 import { formatHistoryTimestamp, getHistoryEventMeta } from '../../lib/timesheet-history'
 
@@ -58,6 +58,12 @@ const fetchHistory = createServerFn()
     return loadTimesheetHistory(data.userId, data.month)
   })
 
+const fetchLeaveDays = createServerFn()
+  .validator((data: { userId: string; month: string }) => data)
+  .handler(async ({ data }) => {
+    return loadLeaveDaysForMonth(data.userId, data.month)
+  })
+
 const fetchTimesheetStatus = createServerFn()
   .validator((data: { userId: string; month: string }) => data)
   .handler(async ({ data }) => {
@@ -91,6 +97,7 @@ function ReviewPage() {
   const [entries, setEntries] = useState<Record<string, Record<number, number>>>({})
   const [realProjects, setRealProjects] = useState<{ id: string; name: string }[]>([])
   const [history, setHistory] = useState<Array<{ id: string; eventType: string; note: string | null; createdAt: string | null; performedByUserId: string | null; performedByName: string | null }>>([])
+  const [leaveDays, setLeaveDays] = useState<Record<number, 'full' | 'half'>>({})
   // month is computed in the browser after mount — never during SSR.
   const [month, setMonth] = useState<string | null>(null)
 
@@ -127,6 +134,15 @@ function ReviewPage() {
 
     fetchHistory({ data: { userId, month } }).then((h) => {
       setHistory(h)
+    })
+
+    fetchLeaveDays({ data: { userId, month } }).then((ld) => {
+      const leaveMap: Record<number, 'full' | 'half'> = {}
+      for (const entry of ld) {
+        const day = parseInt(entry.date.split('-')[2])
+        leaveMap[day] = entry.type as 'full' | 'half'
+      }
+      setLeaveDays(leaveMap)
     })
   }, [userId, month])
 
@@ -312,16 +328,27 @@ function ReviewPage() {
                 <th className="text-left text-gray-400 font-normal px-4 py-2 w-32 sticky left-0 bg-gray-800/50">
                   Project
                 </th>
-                {DAYS.map((d) => (
-                  <th
-                    key={d}
-                    className={`text-center font-normal py-2 px-1 min-w-[28px] ${
-                      WEEKENDS.includes(d) ? 'text-gray-700' : 'text-gray-400'
-                    }`}
-                  >
-                    {d}
-                  </th>
-                ))}
+                {DAYS.map((d) => {
+                  const leaveType = leaveDays[d]
+                  return (
+                    <th
+                      key={d}
+                      className={`text-center font-normal py-2 px-1 min-w-[28px] relative ${
+                        WEEKENDS.includes(d) ? 'text-gray-700' : leaveType ? '' : 'text-gray-400'
+                      } ${
+                        leaveType === 'full' ? 'bg-sky-900/40 text-sky-300' :
+                        leaveType === 'half' ? 'bg-sky-900/20 text-sky-400' : ''
+                      }`}
+                    >
+                      {d}
+                      {leaveType && (
+                        <span className="absolute -top-0.5 -right-0.5 text-[8px] font-bold text-sky-300">
+                          {leaveType === 'full' ? 'L' : '½'}
+                        </span>
+                      )}
+                    </th>
+                  )
+                })}
                 <th className="text-center text-gray-400 font-normal px-3 py-2 w-14">Total</th>
               </tr>
             </thead>
@@ -338,19 +365,22 @@ function ReviewPage() {
                   {DAYS.map((d) => {
                     const val = entries[project.id]?.[d]
                     const isWeekend = WEEKENDS.includes(d)
+                    const isLeave = leaveDays[d]
                     return (
                       <td
                         key={d}
                         className={`text-center py-1.5 px-0.5 ${
                           isWeekend
                             ? 'bg-gray-800/30 text-gray-700'
+                            : isLeave
+                            ? isLeave === 'full' ? 'bg-sky-900/20 text-sky-600' : 'bg-sky-900/10 text-sky-700'
                             : val
                             ? pi === 0 ? 'text-emerald-300 bg-emerald-900/20'
                             : 'text-purple-300 bg-purple-900/20'
                             : 'text-gray-700'
                         }`}
                       >
-                        {isWeekend ? '' : val ?? '—'}
+                        {isWeekend ? '' : isLeave ? (isLeave === 'full' ? 'LEAVE' : '½ DAY') : val ?? '—'}
                       </td>
                     )
                   })}
@@ -368,14 +398,15 @@ function ReviewPage() {
                   {DAYS.map((d) => {
                     const total = getDayTotal(d)
                     const isWeekend = WEEKENDS.includes(d)
+                    const isLeave = leaveDays[d]
                     return (
                       <td
                         key={d}
                         className={`text-center py-1.5 font-medium ${
-                          isWeekend ? 'text-gray-700' : total > 0 ? 'text-white' : 'text-gray-700'
+                          isWeekend ? 'text-gray-700' : isLeave ? 'text-sky-500' : total > 0 ? 'text-white' : 'text-gray-700'
                         }`}
                       >
-                        {isWeekend ? '' : total > 0 ? total : '—'}
+                        {isWeekend ? '' : isLeave ? (isLeave === 'full' ? 'L' : '½') : total > 0 ? total : '—'}
                       </td>
                     )
                   })}

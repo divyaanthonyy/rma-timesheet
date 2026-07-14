@@ -22,8 +22,8 @@ export const Route = createFileRoute('/engineer')({
       throw redirect({ to: '/login', search: { error: 'unauthorized' } })
     }
 
-    // admins without engineer access are sent to their own portal
-    if (user.role === 'admin' && !user.isEngineer) {
+    // admins are sent to their own portal regardless of engineer access
+    if (user.role === 'admin') {
       throw redirect({ to: '/admin/dashboard' })
     }
 

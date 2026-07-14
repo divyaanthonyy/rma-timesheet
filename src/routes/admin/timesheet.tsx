@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from 'react'
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { auth } from '../../lib/auth'
-import { loadEntriesForMonth, loadUserProjects, upsertEntry, updateTimesheetStatus, loadTimesheetStatus, loadTimesheetHistory, getUserByEmail } from '../../db/queries'
+import { loadEntriesForMonth, loadUserProjects, upsertEntry, updateTimesheetStatus, loadTimesheetStatus, loadTimesheetHistory, getUserByEmail, loadLeaveDaysForMonth, upsertLeaveDay, deleteLeaveDay } from '../../db/queries'
 import { formatHistoryTimestamp, getHistoryEventMeta } from '../../lib/timesheet-history'
 
 export const Route = createFileRoute('/admin/timesheet')({
@@ -65,6 +65,18 @@ const unapproveTimesheetFn = createServerFn()
   .validator((d: { userId: string; month: string }) => d)
   .handler(async ({ data }) => updateTimesheetStatus(data.userId, data.month, 'submitted'))
 
+const fetchLeaveDays = createServerFn()
+  .validator((data: { userId: string }) => data)
+  .handler(async ({ data }) => loadLeaveDaysForMonth(data.userId, MONTH))
+
+const saveLeaveDayFn = createServerFn()
+  .validator((data: { userId: string; date: string; type: 'full' | 'half' }) => data)
+  .handler(async ({ data }) => upsertLeaveDay(data.userId, data.date, data.type))
+
+const deleteLeaveDayFn = createServerFn()
+  .validator((data: { userId: string; date: string }) => data)
+  .handler(async ({ data }) => deleteLeaveDay(data.userId, data.date))
+
 type TimesheetStatus = 'draft' | 'approved'
 
 export default function AdminTimesheetPage() {
@@ -75,6 +87,8 @@ export default function AdminTimesheetPage() {
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'error'>('saved')
   const [timesheetStatus, setTimesheetStatus] = useState<TimesheetStatus>('draft')
   const [history, setHistory] = useState<Array<{ id: string; eventType: string; note: string | null; createdAt: string | null; performedByUserId: string | null; performedByName: string | null }>>([])
+  const [leaveDays, setLeaveDays] = useState<Record<number, 'full' | 'half'>>({})
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; day: number } | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -108,12 +122,33 @@ export default function AdminTimesheetPage() {
           setTimesheetStatus(statusData.status as TimesheetStatus)
         }
         setHistory(historyData)
+
+        // Load leave days separately so a failure here doesn't block the timesheet
+        try {
+          const leaveDaysData = await fetchLeaveDays({ data: { userId } })
+          const leaveMap: Record<number, 'full' | 'half'> = {}
+          for (const ld of leaveDaysData) {
+            const day = parseInt(ld.date.split('-')[2])
+            leaveMap[day] = ld.type as 'full' | 'half'
+          }
+          setLeaveDays(leaveMap)
+        } catch {
+          // leave days are optional
+        }
+      } catch (error) {
+        console.error('Failed to load timesheet data:', error)
       } finally {
         setLoading(false)
       }
     }
     loadData()
   }, [])
+
+  useEffect(() => {
+    function handleClick() { setContextMenu(null) }
+    if (contextMenu) document.addEventListener('click', handleClick)
+    return () => document.removeEventListener('click', handleClick)
+  }, [contextMenu])
 
   function handleChange(projectId: string, day: number, raw: string) {
     if (!currentUser) return
@@ -152,6 +187,32 @@ export default function AdminTimesheetPage() {
     if (!currentUser) return
     await unapproveTimesheetFn({ data: { userId: currentUser.id, month: MONTH } })
     setTimesheetStatus('draft')
+  }
+
+  function handleContextMenu(e: React.MouseEvent, day: number) {
+    e.preventDefault()
+    if (isLocked) return
+    setContextMenu({ x: e.clientX, y: e.clientY, day })
+  }
+
+  async function handleSetLeave(day: number, type: 'full' | 'half') {
+    if (!currentUser) return
+    const date = `${MONTH}-${String(day).padStart(2, '0')}`
+    await saveLeaveDayFn({ data: { userId: currentUser.id, date, type } })
+    setLeaveDays((prev) => ({ ...prev, [day]: type }))
+    setContextMenu(null)
+  }
+
+  async function handleRemoveLeave(day: number) {
+    if (!currentUser) return
+    const date = `${MONTH}-${String(day).padStart(2, '0')}`
+    await deleteLeaveDayFn({ data: { userId: currentUser.id, date } })
+    setLeaveDays((prev) => {
+      const next = { ...prev }
+      delete next[day]
+      return next
+    })
+    setContextMenu(null)
   }
 
   function getDayTotal(day: number) {
@@ -247,9 +308,28 @@ export default function AdminTimesheetPage() {
             <thead>
               <tr className="bg-gray-800/50">
                 <th className="text-left text-gray-400 font-normal px-4 py-2 w-32 sticky left-0 bg-gray-800/50">Project</th>
-                {DAYS.map((d) => (
-                  <th key={d} className={`text-center font-normal py-2 px-1 min-w-[28px] ${WEEKENDS.includes(d) ? 'text-gray-700' : 'text-gray-400'} ${d === today ? 'text-amber-400' : ''}`}>{d}</th>
-                ))}
+                {DAYS.map((d) => {
+                  const leaveType = leaveDays[d]
+                  return (
+                    <th
+                      key={d}
+                      onContextMenu={(e) => handleContextMenu(e, d)}
+                      className={`text-center font-normal py-2 px-1 min-w-[28px] cursor-context-menu relative ${
+                        WEEKENDS.includes(d) ? 'text-gray-700' : leaveType ? '' : 'text-gray-400'
+                      } ${d === today ? 'text-amber-400' : ''} ${
+                        leaveType === 'full' ? 'bg-sky-900/40 text-sky-300' :
+                        leaveType === 'half' ? 'bg-sky-900/20 text-sky-400' : ''
+                      }`}
+                    >
+                      {d}
+                      {leaveType && (
+                        <span className="absolute -top-0.5 -right-0.5 text-[8px] font-bold text-sky-300">
+                          {leaveType === 'full' ? 'L' : '½'}
+                        </span>
+                      )}
+                    </th>
+                  )
+                })}
                 <th className="text-center text-gray-400 font-normal px-3 py-2 w-14">Total</th>
               </tr>
             </thead>
@@ -262,10 +342,17 @@ export default function AdminTimesheetPage() {
                   {DAYS.map((d) => {
                     const val = entries[project.id]?.[d]
                     const isWeekend = WEEKENDS.includes(d)
+                    const isLeave = leaveDays[d]
                     return (
                       <td key={d} className="p-0">
                         {isWeekend ? (
                           <div className="text-center py-1.5 px-0.5 bg-gray-800/30 text-gray-700" />
+                        ) : isLeave ? (
+                          <div className={`text-center py-1.5 px-0.5 ${
+                            isLeave === 'full' ? 'bg-sky-900/20 text-sky-600' : 'bg-sky-900/10 text-sky-700'
+                          }`}>
+                            {isLeave === 'full' ? 'LEAVE' : '½ DAY'}
+                          </div>
                         ) : (
                           <input
                             type="number" min={0} max={8}
@@ -289,9 +376,10 @@ export default function AdminTimesheetPage() {
                 {DAYS.map((d) => {
                   const total = getDayTotal(d)
                   const isWeekend = WEEKENDS.includes(d)
+                  const isLeave = leaveDays[d]
                   return (
-                    <td key={d} className={`text-center py-1.5 font-medium ${isWeekend ? 'text-gray-700' : total > 0 ? 'text-white' : 'text-gray-700'}`}>
-                      {isWeekend ? '' : total > 0 ? total : '—'}
+                    <td key={d} className={`text-center py-1.5 font-medium ${isWeekend ? 'text-gray-700' : isLeave ? 'text-sky-500' : total > 0 ? 'text-white' : 'text-gray-700'}`}>
+                      {isWeekend ? '' : isLeave ? (isLeave === 'full' ? 'L' : '½') : total > 0 ? total : '—'}
                     </td>
                   )
                 })}
@@ -305,9 +393,37 @@ export default function AdminTimesheetPage() {
           <p className="text-gray-600 text-xs">
             {saveStatus === 'saving' ? '⏳ Saving to database...' : saveStatus === 'unsaved' ? '● Changes not yet saved' : saveStatus === 'error' ? '✕ Failed to save — try again' : '💾 Autosaved to database'}
           </p>
-          <p className="text-gray-500 text-xs">Max 8 hrs/day per project</p>
+          <p className="text-gray-500 text-xs">Max 8 hrs/day per project · Right-click a date to mark leave</p>
         </div>
       </div>
+
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[160px]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            onClick={() => handleSetLeave(contextMenu.day, 'full')}
+            className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+          >
+            Full Day Leave
+          </button>
+          <button
+            onClick={() => handleSetLeave(contextMenu.day, 'half')}
+            className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+          >
+            Half Day Leave
+          </button>
+          {leaveDays[contextMenu.day] && (
+            <button
+              onClick={() => handleRemoveLeave(contextMenu.day)}
+              className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-gray-800 transition-colors"
+            >
+              Remove Leave
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mt-6">
         <div className="px-4 py-3 border-b border-gray-800 bg-gray-800/40">

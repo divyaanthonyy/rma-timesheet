@@ -17,6 +17,7 @@ import { Route as EngineerTimesheetRouteImport } from './routes/engineer/timeshe
 import { Route as AdminTimesheetsRouteImport } from './routes/admin/timesheets'
 import { Route as AdminTimesheetRouteImport } from './routes/admin/timesheet'
 import { Route as AdminProjectsRouteImport } from './routes/admin/projects'
+import { Route as AdminManpowerRouteImport } from './routes/admin/manpower'
 import { Route as AdminEmployeesRouteImport } from './routes/admin/employees'
 import { Route as AdminDashboardRouteImport } from './routes/admin/dashboard'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -62,6 +63,11 @@ const AdminProjectsRoute = AdminProjectsRouteImport.update({
   path: '/projects',
   getParentRoute: () => AdminRouteRoute,
 } as any)
+const AdminManpowerRoute = AdminManpowerRouteImport.update({
+  id: '/manpower',
+  path: '/manpower',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
 const AdminEmployeesRoute = AdminEmployeesRouteImport.update({
   id: '/employees',
   path: '/employees',
@@ -90,6 +96,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/admin/dashboard': typeof AdminDashboardRoute
   '/admin/employees': typeof AdminEmployeesRoute
+  '/admin/manpower': typeof AdminManpowerRoute
   '/admin/projects': typeof AdminProjectsRoute
   '/admin/timesheet': typeof AdminTimesheetRoute
   '/admin/timesheets': typeof AdminTimesheetsRoute
@@ -104,6 +111,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/admin/dashboard': typeof AdminDashboardRoute
   '/admin/employees': typeof AdminEmployeesRoute
+  '/admin/manpower': typeof AdminManpowerRoute
   '/admin/projects': typeof AdminProjectsRoute
   '/admin/timesheet': typeof AdminTimesheetRoute
   '/admin/timesheets': typeof AdminTimesheetsRoute
@@ -119,6 +127,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/admin/dashboard': typeof AdminDashboardRoute
   '/admin/employees': typeof AdminEmployeesRoute
+  '/admin/manpower': typeof AdminManpowerRoute
   '/admin/projects': typeof AdminProjectsRoute
   '/admin/timesheet': typeof AdminTimesheetRoute
   '/admin/timesheets': typeof AdminTimesheetsRoute
@@ -135,6 +144,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/admin/dashboard'
     | '/admin/employees'
+    | '/admin/manpower'
     | '/admin/projects'
     | '/admin/timesheet'
     | '/admin/timesheets'
@@ -149,6 +159,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/admin/dashboard'
     | '/admin/employees'
+    | '/admin/manpower'
     | '/admin/projects'
     | '/admin/timesheet'
     | '/admin/timesheets'
@@ -163,6 +174,7 @@ export interface FileRouteTypes {
     | '/login'
     | '/admin/dashboard'
     | '/admin/employees'
+    | '/admin/manpower'
     | '/admin/projects'
     | '/admin/timesheet'
     | '/admin/timesheets'
@@ -237,6 +249,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminProjectsRouteImport
       parentRoute: typeof AdminRouteRoute
     }
+    '/admin/manpower': {
+      id: '/admin/manpower'
+      path: '/manpower'
+      fullPath: '/admin/manpower'
+      preLoaderRoute: typeof AdminManpowerRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
     '/admin/employees': {
       id: '/admin/employees'
       path: '/employees'
@@ -271,6 +290,7 @@ declare module '@tanstack/react-router' {
 interface AdminRouteRouteChildren {
   AdminDashboardRoute: typeof AdminDashboardRoute
   AdminEmployeesRoute: typeof AdminEmployeesRoute
+  AdminManpowerRoute: typeof AdminManpowerRoute
   AdminProjectsRoute: typeof AdminProjectsRoute
   AdminTimesheetRoute: typeof AdminTimesheetRoute
   AdminTimesheetsRoute: typeof AdminTimesheetsRoute
@@ -280,6 +300,7 @@ interface AdminRouteRouteChildren {
 const AdminRouteRouteChildren: AdminRouteRouteChildren = {
   AdminDashboardRoute: AdminDashboardRoute,
   AdminEmployeesRoute: AdminEmployeesRoute,
+  AdminManpowerRoute: AdminManpowerRoute,
   AdminProjectsRoute: AdminProjectsRoute,
   AdminTimesheetRoute: AdminTimesheetRoute,
   AdminTimesheetsRoute: AdminTimesheetsRoute,

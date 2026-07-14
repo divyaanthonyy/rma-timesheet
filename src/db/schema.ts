@@ -1,5 +1,5 @@
 import { sql, relations } from 'drizzle-orm'
-import { integer, sqliteTable, text, real, index } from 'drizzle-orm/sqlite-core'
+import { integer, sqliteTable, text, real, index, unique } from 'drizzle-orm/sqlite-core'
 
 // ── your app tables ──────────────────────────────────────────────────────────
 
@@ -66,6 +66,40 @@ export const timesheetHistory = sqliteTable('timesheet_history', {
   performedByName: text('performed_by_name'),
   createdAt: text('created_at').default(sql`(current_timestamp)`),
 })
+
+export const leaveDays = sqliteTable('leave_days', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().references(() => users.id),
+  date: text('date').notNull(),
+  type: text('type').notNull().default('full'), // 'full' or 'half'
+  createdAt: text('created_at').default(sql`(current_timestamp)`),
+})
+
+export const manpowerCapacity = sqliteTable('manpower_capacity', {
+  id: text('id').primaryKey(),
+  month: text('month').notNull().unique(),
+  overrideHours: integer('override_hours'),
+  createdAt: text('created_at').default(sql`(current_timestamp)`),
+})
+
+export const holidays = sqliteTable('holidays', {
+  id: text('id').primaryKey(),
+  date: text('date').notNull().unique(),
+  name: text('name').notNull(),
+  source: text('source').notNull().default('api'),
+  createdAt: text('created_at').default(sql`(current_timestamp)`),
+})
+
+export const manpowerEntries = sqliteTable('manpower_entries', {
+  id: text('id').primaryKey(),
+  projectId: text('project_id').notNull().references(() => projects.id),
+  month: text('month').notNull(),
+  hours: integer('hours').notNull().default(0),
+  source: text('source').notNull().default('manual'),
+  createdAt: text('created_at').default(sql`(current_timestamp)`),
+}, (table) => ({
+  uniqueProjectMonth: unique().on(table.projectId, table.month),
+}))
 
 // ── better-auth tables ───────────────────────────────────────────────────────
 

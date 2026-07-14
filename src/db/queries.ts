@@ -1,7 +1,7 @@
 import { drizzle } from 'drizzle-orm/libsql'
 import { createClient } from '@libsql/client'
 import { eq, and, lte, gte, or, isNull, desc } from 'drizzle-orm'
-import { timesheetEntries, timesheets, userProjects, projects, users, timesheetHistory } from './schema'
+import { timesheetEntries, timesheets, userProjects, projects, users, timesheetHistory, leaveDays, manpowerCapacity, manpowerEntries, holidays } from './schema'
 import * as schema from './schema'
 import { nanoid } from 'nanoid'
 
@@ -87,6 +87,65 @@ async function ensureProjectDatesColumns() {
   } catch {
     // Column already exists
   }
+}
+
+async function ensureLeaveDaysTable() {
+  const client = createClient({
+    url: process.env.TURSO_DATABASE_URL!,
+    authToken: process.env.TURSO_AUTH_TOKEN!,
+  })
+
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS leave_days (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      date TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'full',
+      created_at TEXT DEFAULT (CURRENT_TIMESTAMP),
+      FOREIGN KEY (user_id) REFERENCES users(id)
+    )
+  `)
+}
+
+export async function loadLeaveDaysForMonth(userId: string, month: string) {
+  await ensureLeaveDaysTable()
+  const db = getDb()
+  const rows = await db
+    .select()
+    .from(leaveDays)
+    .where(eq(leaveDays.userId, userId))
+  return rows.filter((r) => r.date.startsWith(month))
+}
+
+export async function upsertLeaveDay(userId: string, date: string, type: 'full' | 'half') {
+  await ensureLeaveDaysTable()
+  const db = getDb()
+  const existing = await db
+    .select()
+    .from(leaveDays)
+    .where(and(eq(leaveDays.userId, userId), eq(leaveDays.date, date)))
+
+  if (existing.length > 0) {
+    await db
+      .update(leaveDays)
+      .set({ type })
+      .where(eq(leaveDays.id, existing[0].id))
+  } else {
+    await db.insert(leaveDays).values({
+      id: nanoid(),
+      userId,
+      date,
+      type,
+    })
+  }
+}
+
+export async function deleteLeaveDay(userId: string, date: string) {
+  await ensureLeaveDaysTable()
+  const db = getDb()
+  await db
+    .delete(leaveDays)
+    .where(and(eq(leaveDays.userId, userId), eq(leaveDays.date, date)))
 }
 
 // load all entries for a user for a given month
@@ -287,6 +346,223 @@ export async function loadTimesheetStatus(userId: string, month: string) {
     .from(timesheets)
     .where(and(eq(timesheets.userId, userId), eq(timesheets.month, month)))
   return result[0] ?? null
+}
+
+// ── Manpower Loading ─────────────────────────────────────────────────────────
+
+export async function loadCapacityOverrides(months: string[]) {
+  const db = getDb()
+  const rows = await db.select().from(manpowerCapacity)
+  return rows.filter((r) => months.includes(r.month))
+}
+
+export async function setCapacityOverride(month: string, hours: number) {
+  const db = getDb()
+  const existing = await db
+    .select()
+    .from(manpowerCapacity)
+    .where(eq(manpowerCapacity.month, month))
+
+  if (existing.length > 0) {
+    await db
+      .update(manpowerCapacity)
+      .set({ overrideHours: hours })
+      .where(eq(manpowerCapacity.id, existing[0].id))
+  } else {
+    await db.insert(manpowerCapacity).values({
+      id: nanoid(),
+      month,
+      overrideHours: hours,
+    })
+  }
+}
+
+export async function clearCapacityOverride(month: string) {
+  const db = getDb()
+  const existing = await db
+    .select()
+    .from(manpowerCapacity)
+    .where(eq(manpowerCapacity.month, month))
+
+  if (existing.length > 0) {
+    await db
+      .update(manpowerCapacity)
+      .set({ overrideHours: null })
+      .where(eq(manpowerCapacity.id, existing[0].id))
+  }
+}
+
+export async function loadManpowerEntries(months: string[]) {
+  const db = getDb()
+  const rows = await db.select().from(manpowerEntries)
+  return rows.filter((r) => months.includes(r.month))
+}
+
+export async function upsertManpowerEntry(projectId: string, month: string, hours: number) {
+  const db = getDb()
+  const existing = await db
+    .select()
+    .from(manpowerEntries)
+    .where(
+      and(
+        eq(manpowerEntries.projectId, projectId),
+        eq(manpowerEntries.month, month),
+      ),
+    )
+
+  if (existing.length > 0) {
+    await db
+      .update(manpowerEntries)
+      .set({ hours, source: 'manual' })
+      .where(eq(manpowerEntries.id, existing[0].id))
+  } else {
+    await db.insert(manpowerEntries).values({
+      id: nanoid(),
+      projectId,
+      month,
+      hours,
+      source: 'manual',
+    })
+  }
+}
+
+// Sum timesheet_entries.hours grouped by projectId + month for the given months.
+// Returns: { [projectId]: { [month]: hours } }
+export async function loadActualHoursByProjectMonth(months: string[]) {
+  const db = getDb()
+  const entries = await db.select().from(timesheetEntries)
+  const result: Record<string, Record<string, number>> = {}
+  for (const entry of entries) {
+    const m = entry.date.slice(0, 7)
+    if (!months.includes(m)) continue
+    if (!result[entry.projectId]) result[entry.projectId] = {}
+    result[entry.projectId][m] = (result[entry.projectId][m] ?? 0) + entry.hours
+  }
+  return result
+}
+
+// Returns which users logged time per project+month.
+// Returns: { [projectId]: { [month]: string[] } } — array of userIds
+export async function loadWhoLoggedTimeByProjectMonth(months: string[]) {
+  const db = getDb()
+  const entries = await db
+    .select({ userId: timesheetEntries.userId, projectId: timesheetEntries.projectId, date: timesheetEntries.date })
+    .from(timesheetEntries)
+  const result: Record<string, Record<string, string[]>> = {}
+  for (const entry of entries) {
+    const m = entry.date.slice(0, 7)
+    if (!months.includes(m)) continue
+    if (!result[entry.projectId]) result[entry.projectId] = {}
+    if (!result[entry.projectId][m]) result[entry.projectId][m] = []
+    if (!result[entry.projectId][m].includes(entry.userId)) {
+      result[entry.projectId][m].push(entry.userId)
+    }
+  }
+  return result
+}
+
+// Returns approved status per userId+month for the given months.
+// Returns: { [userId]: Set<month> } of months where that user has an approved timesheet.
+export async function loadApprovedTimesheetMonths(months: string[]) {
+  const db = getDb()
+  const all = await db
+    .select({ userId: timesheets.userId, month: timesheets.month, status: timesheets.status })
+    .from(timesheets)
+  const approved: Record<string, Set<string>> = {}
+  for (const row of all) {
+    if (row.status === 'approved' && months.includes(row.month)) {
+      if (!approved[row.userId]) approved[row.userId] = new Set()
+      approved[row.userId].add(row.month)
+    }
+  }
+  return approved
+}
+
+// ── Holidays ─────────────────────────────────────────────────────────────────
+
+export async function loadHolidays(months: string[]) {
+  const db = getDb()
+  const rows = await db.select().from(holidays)
+  return rows.filter((r) => months.some((m) => r.date.startsWith(m)))
+}
+
+export async function refreshHolidaysFromApi(year: number) {
+  // Fetch public holidays from Nager.Date; never delete manual rows.
+  let apiHolidays: { date: string; localName: string }[] = []
+  try {
+    const res = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${year}/ID`)
+    if (res.ok) apiHolidays = await res.json()
+  } catch {
+    // API unreachable — fall back to whatever is cached
+    return
+  }
+
+  const db = getDb()
+  for (const h of apiHolidays) {
+    // Only upsert if no manual row exists for this date
+    const existing = await db
+      .select()
+      .from(holidays)
+      .where(eq(holidays.date, h.date))
+    if (existing.length > 0 && existing[0].source === 'manual') continue
+
+    if (existing.length > 0) {
+      await db.update(holidays).set({ name: h.localName }).where(eq(holidays.id, existing[0].id))
+    } else {
+      await db.insert(holidays).values({ id: nanoid(), date: h.date, name: h.localName, source: 'api' })
+    }
+  }
+}
+
+export async function addManualHoliday(date: string, name: string) {
+  const db = getDb()
+  await db.insert(holidays).values({ id: nanoid(), date, name, source: 'manual' })
+}
+
+export async function removeHoliday(id: string) {
+  const db = getDb()
+  await db.delete(holidays).where(eq(holidays.id, id))
+}
+
+// ── Capacity helpers ─────────────────────────────────────────────────────────
+
+export async function getEngineerCount() {
+  const db = getDb()
+  const rows = await db
+    .select({ id: users.id })
+    .from(users)
+    .where(eq(users.role, 'engineer'))
+  return rows.length
+}
+
+// Load raw approved leave day records for the given months.
+// Returns records with date and type, filtered to approved users and weekdays.
+// Holiday filtering is done in the browser.
+export async function loadApprovedLeaveDays(months: string[]) {
+  const db = getDb()
+
+  const allTimesheets = await db
+    .select({ userId: timesheets.userId, month: timesheets.month, status: timesheets.status })
+    .from(timesheets)
+  const approvedUsersByMonth: Record<string, Set<string>> = {}
+  for (const t of allTimesheets) {
+    if (t.status === 'approved' && months.includes(t.month)) {
+      if (!approvedUsersByMonth[t.month]) approvedUsersByMonth[t.month] = new Set()
+      approvedUsersByMonth[t.month].add(t.userId)
+    }
+  }
+
+  const allLeave = await db.select().from(leaveDays)
+  const result: { date: string; type: string }[] = []
+  for (const ld of allLeave) {
+    const m = ld.date.slice(0, 7)
+    if (!months.includes(m)) continue
+    if (!approvedUsersByMonth[m]?.has(ld.userId)) continue
+    const day = new Date(ld.date).getDay()
+    if (day === 0 || day === 6) continue
+    result.push({ date: ld.date, type: ld.type })
+  }
+  return result
 }
 
 // load all users

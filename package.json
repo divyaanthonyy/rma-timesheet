@@ -6,8 +6,8 @@
     "#/*": "./src/*"
   },
   "scripts": {
-   "dev": "CLOUDFLARE_ENV=development vite dev --port 3000",
-   "generate-routes": "tsr generate",
+    "dev": "CLOUDFLARE_ENV=development vite dev --port 3000",
+    "generate-routes": "tsr generate",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
@@ -35,6 +35,7 @@
     "nanoid": "^5.1.16",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "recharts": "^3.9.2",
     "resend": "^6.16.0",
     "tailwindcss": "^4.3.1",
     "xlsx": "^0.18.5"

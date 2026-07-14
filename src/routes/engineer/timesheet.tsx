@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { auth } from '../../lib/auth'
-import { loadEntriesForMonth, loadUserProjects, upsertEntry, updateTimesheetStatus, loadTimesheetStatus, getUserByEmail, loadTimesheetHistory } from '../../db/queries'
+import { loadEntriesForMonth, loadUserProjects, upsertEntry, updateTimesheetStatus, loadTimesheetStatus, getUserByEmail, loadTimesheetHistory, loadLeaveDaysForMonth, upsertLeaveDay, deleteLeaveDay } from '../../db/queries'
 import { formatHistoryTimestamp, getHistoryEventMeta } from '../../lib/timesheet-history'
 
 export const Route = createFileRoute('/engineer/timesheet')({
@@ -79,6 +79,24 @@ const submitTimesheetFn = createServerFn()
     await updateTimesheetStatus(data.userId, data.month, 'submitted')
   })
 
+const fetchLeaveDays = createServerFn()
+  .validator((data: { userId: string }) => data)
+  .handler(async ({ data }) => {
+    return loadLeaveDaysForMonth(data.userId, MONTH)
+  })
+
+const saveLeaveDayFn = createServerFn()
+  .validator((data: { userId: string; date: string; type: 'full' | 'half' }) => data)
+  .handler(async ({ data }) => {
+    await upsertLeaveDay(data.userId, data.date, data.type)
+  })
+
+const deleteLeaveDayFn = createServerFn()
+  .validator((data: { userId: string; date: string }) => data)
+  .handler(async ({ data }) => {
+    await deleteLeaveDay(data.userId, data.date)
+  })
+
 type TimesheetStatus = 'draft' | 'submitted' | 'approved' | 'returned'
 
 type CurrentUser = {
@@ -101,6 +119,8 @@ export default function TimesheetPage() {
   const [timesheetStatus, setTimesheetStatus] = useState<TimesheetStatus>('draft')
   const [returnNote, setReturnNote] = useState<string | null>(null)
   const [history, setHistory] = useState<Array<{ id: string; eventType: string; note: string | null; createdAt: string | null; performedByUserId: string | null; performedByName: string | null }>>([])
+  const [leaveDays, setLeaveDays] = useState<Record<number, 'full' | 'half'>>({})
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; day: number } | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -115,11 +135,12 @@ export default function TimesheetPage() {
         const userId = user.id
 
         // Load all data in parallel
-        const [projectsData, entriesData, statusData, historyData] = await Promise.all([
+        const [projectsData, entriesData, statusData, historyData, leaveDaysData] = await Promise.all([
           fetchProjects({ data: { userId } }),
           fetchEntries({ data: { userId } }),
           fetchStatus({ data: { userId } }),
-          fetchHistory({ data: { userId, month: MONTH } })
+          fetchHistory({ data: { userId, month: MONTH } }),
+          fetchLeaveDays({ data: { userId } }),
         ])
 
         setProjects(projectsData)
@@ -137,6 +158,13 @@ export default function TimesheetPage() {
           setReturnNote(statusData.returnNote)
         }
         setHistory(historyData)
+
+        const leaveMap: Record<number, 'full' | 'half'> = {}
+        for (const ld of leaveDaysData) {
+          const day = parseInt(ld.date.split('-')[2])
+          leaveMap[day] = ld.type as 'full' | 'half'
+        }
+        setLeaveDays(leaveMap)
       } catch (error) {
         console.error('Failed to load user data:', error)
       } finally {
@@ -146,6 +174,16 @@ export default function TimesheetPage() {
 
     loadData()
   }, [])
+
+  useEffect(() => {
+    function handleClick() {
+      setContextMenu(null)
+    }
+    if (contextMenu) {
+      document.addEventListener('click', handleClick)
+    }
+    return () => document.removeEventListener('click', handleClick)
+  }, [contextMenu])
 
   function handleChange(projectId: string, day: number, raw: string) {
     if (!currentUser) return
@@ -184,6 +222,32 @@ export default function TimesheetPage() {
     await submitTimesheetFn({ data: { userId: currentUser.id, month: MONTH } })
     setTimesheetStatus('submitted')
     setReturnNote(null)
+  }
+
+  function handleContextMenu(e: React.MouseEvent, day: number) {
+    e.preventDefault()
+    if (isLocked) return
+    setContextMenu({ x: e.clientX, y: e.clientY, day })
+  }
+
+  async function handleSetLeave(day: number, type: 'full' | 'half') {
+    if (!currentUser) return
+    const date = `${MONTH}-${String(day).padStart(2, '0')}`
+    await saveLeaveDayFn({ data: { userId: currentUser.id, date, type } })
+    setLeaveDays((prev) => ({ ...prev, [day]: type }))
+    setContextMenu(null)
+  }
+
+  async function handleRemoveLeave(day: number) {
+    if (!currentUser) return
+    const date = `${MONTH}-${String(day).padStart(2, '0')}`
+    await deleteLeaveDayFn({ data: { userId: currentUser.id, date } })
+    setLeaveDays((prev) => {
+      const next = { ...prev }
+      delete next[day]
+      return next
+    })
+    setContextMenu(null)
   }
 
   function getDayTotal(day: number) {
@@ -318,16 +382,28 @@ export default function TimesheetPage() {
                 <th className="text-left text-gray-400 font-normal px-4 py-2 w-32 sticky left-0 bg-gray-800/50">
                   Project
                 </th>
-                {DAYS.map((d) => (
-                  <th
-                    key={d}
-                    className={`text-center font-normal py-2 px-1 min-w-[28px] ${
-                      WEEKENDS.includes(d) ? 'text-gray-700' : 'text-gray-400'
-                    } ${d === today ? 'text-amber-400' : ''}`}
-                  >
-                    {d}
-                  </th>
-                ))}
+                {DAYS.map((d) => {
+                  const leaveType = leaveDays[d]
+                  return (
+                    <th
+                      key={d}
+                      onContextMenu={(e) => handleContextMenu(e, d)}
+                      className={`text-center font-normal py-2 px-1 min-w-[28px] cursor-context-menu relative ${
+                        WEEKENDS.includes(d) ? 'text-gray-700' : leaveType ? '' : 'text-gray-400'
+                      } ${d === today ? 'text-amber-400' : ''} ${
+                        leaveType === 'full' ? 'bg-sky-900/40 text-sky-300' :
+                        leaveType === 'half' ? 'bg-sky-900/20 text-sky-400' : ''
+                      }`}
+                    >
+                      {d}
+                      {leaveType && (
+                        <span className="absolute -top-0.5 -right-0.5 text-[8px] font-bold text-sky-300">
+                          {leaveType === 'full' ? 'L' : '½'}
+                        </span>
+                      )}
+                    </th>
+                  )
+                })}
                 <th className="text-center text-gray-400 font-normal px-3 py-2 w-14">Total</th>
               </tr>
             </thead>
@@ -347,10 +423,17 @@ export default function TimesheetPage() {
                   {DAYS.map((d) => {
                     const val = entries[project.id]?.[d]
                     const isWeekend = WEEKENDS.includes(d)
+                    const isLeave = leaveDays[d]
                     return (
                       <td key={d} className="p-0">
                         {isWeekend ? (
                           <div className="text-center py-1.5 px-0.5 bg-gray-800/30 text-gray-700" />
+                        ) : isLeave ? (
+                          <div className={`text-center py-1.5 px-0.5 ${
+                            isLeave === 'full' ? 'bg-sky-900/20 text-sky-600' : 'bg-sky-900/10 text-sky-700'
+                          }`}>
+                            {isLeave === 'full' ? 'LEAVE' : '½ DAY'}
+                          </div>
                         ) : (
                           <input
                             type="number"
@@ -388,14 +471,15 @@ export default function TimesheetPage() {
                 {DAYS.map((d) => {
                   const total = getDayTotal(d)
                   const isWeekend = WEEKENDS.includes(d)
+                  const isLeave = leaveDays[d]
                   return (
                     <td
                       key={d}
                       className={`text-center py-1.5 font-medium ${
-                        isWeekend ? 'text-gray-700' : total > 0 ? 'text-white' : 'text-gray-700'
+                        isWeekend ? 'text-gray-700' : isLeave ? 'text-sky-500' : total > 0 ? 'text-white' : 'text-gray-700'
                       }`}
                     >
-                      {isWeekend ? '' : total > 0 ? total : '—'}
+                      {isWeekend ? '' : isLeave ? (isLeave === 'full' ? 'L' : '½') : total > 0 ? total : '—'}
                     </td>
                   )
                 })}
@@ -409,9 +493,37 @@ export default function TimesheetPage() {
           <p className="text-gray-600 text-xs">
             {saveStatus === 'saving' ? '⏳ Saving to database...' : saveStatus === 'unsaved' ? '● Changes not yet saved' : saveStatus === 'error' ? '✕ Failed to save — try again' : '💾 Autosaved to database'}
           </p>
-          <p className="text-gray-500 text-xs">Max 8 hrs/day per project</p>
+          <p className="text-gray-500 text-xs">Max 8 hrs/day per project · Right-click a date to mark leave</p>
         </div>
       </div>
+
+      {contextMenu && (
+        <div
+          className="fixed z-50 bg-gray-900 border border-gray-700 rounded-lg shadow-xl py-1 min-w-[160px]"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+        >
+          <button
+            onClick={() => handleSetLeave(contextMenu.day, 'full')}
+            className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+          >
+            Full Day Leave
+          </button>
+          <button
+            onClick={() => handleSetLeave(contextMenu.day, 'half')}
+            className="w-full text-left px-3 py-2 text-xs text-gray-300 hover:bg-gray-800 transition-colors"
+          >
+            Half Day Leave
+          </button>
+          {leaveDays[contextMenu.day] && (
+            <button
+              onClick={() => handleRemoveLeave(contextMenu.day)}
+              className="w-full text-left px-3 py-2 text-xs text-red-400 hover:bg-gray-800 transition-colors"
+            >
+              Remove Leave
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mt-6">
         <div className="px-4 py-3 border-b border-gray-800 bg-gray-800/40">

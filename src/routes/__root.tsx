@@ -19,7 +19,7 @@ export const Route = createRootRoute({
 })
 
 type NavItem = {
-  to: '/engineer/timesheet' | '/admin/dashboard' | '/login' |  '/admin/employees' | '/admin/projects' | '/admin/timesheet'
+  to: '/engineer/timesheet' | '/admin/dashboard' | '/login' |  '/admin/employees' | '/admin/projects' | '/admin/timesheet' | '/admin/manpower'
   label: string
 }
 
@@ -32,6 +32,7 @@ const ADMIN_NAV: NavItem[] = [
   { to: '/admin/employees',  label: 'Employees'      },
   { to: '/admin/projects',   label: 'Projects'       },
   { to: '/admin/timesheet',  label: 'Timesheet'      },
+  { to: '/admin/manpower',   label: 'Manpower'       },
 ]
 
 const getCurrentUser = createServerFn().handler(async () => {
