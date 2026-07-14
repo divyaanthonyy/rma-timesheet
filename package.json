@@ -14,7 +14,7 @@
     "lint": "eslint",
     "format": "prettier --write . && eslint --fix",
     "check": "prettier --check .",
-    "deploy": "npm run build && wrangler deploy --env production",
+    "deploy": "CLOUDFLARE_ENV=production npm run build && wrangler deploy --env production",
     "db:push": "drizzle-kit push",
     "db:seed": "dotenv-cli -e .env -- npx tsx src/db/seed.ts"
   },

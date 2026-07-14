@@ -6,7 +6,7 @@ import { db } from '../db'
 
 export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL!,
-   trustedOrigins: [
+  trustedOrigins: [
     'http://localhost:3000',
     'http://localhost:3001',
     'http://localhost:3002',
@@ -25,4 +25,4 @@ export const auth = betterAuth({
   },
   secret: process.env.BETTER_AUTH_SECRET!,
   plugins: [tanstackStartCookies()],
-})dev
+})

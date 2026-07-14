@@ -18,6 +18,7 @@
       },
     },
     "production": {
+      "name": "tanstack-start-app",
       "vars": {
         "TURSO_DATABASE_URL": "libsql://rma-timesheet-dev-aliabanana.aws-ap-northeast-1.turso.io",
         "GOOGLE_CLIENT_ID": "1015162552530-tnlsjlv2n2i2andrn5cpbv15v454h52m.apps.googleusercontent.com",
