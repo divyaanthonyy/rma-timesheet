@@ -13,6 +13,8 @@ export const users = sqliteTable('users', {
   email: text('email').notNull().unique(),
   canApprove: integer('can_approve', { mode: 'boolean' }).notNull().default(false),
   isEngineer: integer('is_engineer', { mode: 'boolean' }).notNull().default(false),
+  startDate: text('start_date'),
+  endDate: text('end_date'),
   createdAt: text('created_at').default(sql`(current_timestamp)`),
 })
 

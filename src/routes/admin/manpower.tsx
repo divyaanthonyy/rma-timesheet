@@ -6,7 +6,7 @@ import {
   loadManpowerEntries, upsertManpowerEntry, loadActualHoursByProjectMonth,
   loadWhoLoggedTimeByProjectMonth, loadApprovedTimesheetMonths,
   loadHolidays, refreshHolidaysFromApi, addManualHoliday, removeHoliday,
-  getEngineerCount, loadApprovedLeaveDays,
+  computeBaseCapacity, loadApprovedLeaveDays,
 } from '../../db/queries'
 import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts'
 
@@ -55,7 +55,9 @@ const removeHolidayFn = createServerFn()
   .validator((data: { id: string }) => data)
   .handler(async ({ data }) => removeHoliday(data.id))
 
-const fetchEngineerCount = createServerFn().handler(async () => getEngineerCount())
+const fetchBaseCapacity = createServerFn()
+  .validator((data: { months: string[] }) => data)
+  .handler(async ({ data }) => computeBaseCapacity(data.months))
 
 const fetchApprovedLeave = createServerFn()
   .validator((data: { months: string[] }) => data)
@@ -91,7 +93,7 @@ function ManpowerPage() {
   const [approvedMonths, setApprovedMonths] = useState<Record<string, Set<string>>>({})
   const [whoLogged, setWhoLogged] = useState<Record<string, Record<string, Set<string>>>>({})
   const [holidays, setHolidays] = useState<{ id: string; date: string; name: string; source: string }[]>([])
-  const [engineerCount, setEngineerCount] = useState(0)
+  const [baseCapacity, setBaseCapacity] = useState<Record<string, number>>({})
   const [approvedLeaveDays, setApprovedLeaveDays] = useState<{ date: string; type: string }[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'backlog' | 'forecast' | 'all'>('backlog')
@@ -100,50 +102,33 @@ function ManpowerPage() {
   const [holidaysExpanded, setHolidaysExpanded] = useState(false)
   const [newHolidayDate, setNewHolidayDate] = useState('')
   const [newHolidayName, setNewHolidayName] = useState('')
+  const [holidayType, setHolidayType] = useState<'national' | 'other'>('national')
+  const [holidayFilterMonth, setHolidayFilterMonth] = useState<string | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     async function load() {
       try {
-        const [pData, oData, eData, aData, apData, wData, hData, ecData, lData] = await Promise.all([
-          fetchProjects(),
-          fetchOverrides({ data: { months: FISCAL_MONTHS } }),
-          fetchEntries({ data: { months: FISCAL_MONTHS } }),
-          fetchActualHours({ data: { months: FISCAL_MONTHS } }),
-          fetchApproved({ data: { months: FISCAL_MONTHS } }),
-          fetchWhoLogged({ data: { months: FISCAL_MONTHS } }),
-          fetchHolidaysData({ data: { months: FISCAL_MONTHS } }),
-          fetchEngineerCount(),
-          fetchApprovedLeave({ data: { months: FISCAL_MONTHS } }),
+        const [pData, oData, eData, aData, apData, wData, hData, bData, lData] = await Promise.all([
+          fetchProjects().catch(() => []),
+          fetchOverrides({ data: { months: FISCAL_MONTHS } }).catch(() => []),
+          fetchEntries({ data: { months: FISCAL_MONTHS } }).catch(() => []),
+          fetchActualHours({ data: { months: FISCAL_MONTHS } }).catch(() => ({})),
+          fetchApproved({ data: { months: FISCAL_MONTHS } }).catch(() => ({})),
+          fetchWhoLogged({ data: { months: FISCAL_MONTHS } }).catch(() => ({})),
+          fetchHolidaysData({ data: { months: FISCAL_MONTHS } }).catch(() => []),
+          fetchBaseCapacity({ data: { months: FISCAL_MONTHS } }).catch(() => ({})),
+          fetchApprovedLeave({ data: { months: FISCAL_MONTHS } }).catch(() => []),
         ])
 
         setProjects(pData as Project[])
-
-        const ovMap: Record<string, number | null> = {}
-        for (const row of oData) ovMap[row.month] = row.overrideHours ?? null
-        setOverrides(ovMap)
-
-        const entryMap: Record<string, Record<string, { hours: number; source: string }>> = {}
-        for (const row of eData) {
-          if (!entryMap[row.projectId]) entryMap[row.projectId] = {}
-          entryMap[row.projectId][row.month] = { hours: row.hours, source: row.source }
-        }
-        setEntries(entryMap)
-
+        setOverrides(ovMapFrom(oData))
+        setEntries(entriesMapFrom(eData))
         setActualHours(aData as Record<string, Record<string, number>>)
         setApprovedMonths(apData as Record<string, Set<string>>)
-
-        const whoMap: Record<string, Record<string, Set<string>>> = {}
-        for (const [projectId, months] of Object.entries(wData as Record<string, Record<string, string[]>>)) {
-          if (!whoMap[projectId]) whoMap[projectId] = {}
-          for (const [month, userIds] of Object.entries(months)) {
-            whoMap[projectId][month] = new Set(userIds)
-          }
-        }
-        setWhoLogged(whoMap)
-
+        setWhoLogged(whoMapFrom(wData))
         setHolidays(hData as { id: string; date: string; name: string; source: string }[])
-        setEngineerCount(ecData as number)
+        setBaseCapacity(bData as Record<string, number>)
         setApprovedLeaveDays(lData as { date: string; type: string }[])
       } finally {
         setLoading(false)
@@ -151,6 +136,32 @@ function ManpowerPage() {
     }
     load()
   }, [])
+
+  function ovMapFrom(rows: { month: string; overrideHours: number | null }[]): Record<string, number | null> {
+    const m: Record<string, number | null> = {}
+    for (const r of rows) m[r.month] = r.overrideHours ?? null
+    return m
+  }
+
+  function entriesMapFrom(rows: { projectId: string; month: string; hours: number; source: string }[]): Record<string, Record<string, { hours: number; source: string }>> {
+    const m: Record<string, Record<string, { hours: number; source: string }>> = {}
+    for (const r of rows) {
+      if (!m[r.projectId]) m[r.projectId] = {}
+      m[r.projectId][r.month] = { hours: r.hours, source: r.source }
+    }
+    return m
+  }
+
+  function whoMapFrom(data: Record<string, Record<string, string[]>>): Record<string, Record<string, Set<string>>> {
+    const m: Record<string, Record<string, Set<string>>> = {}
+    for (const [projectId, months] of Object.entries(data)) {
+      if (!m[projectId]) m[projectId] = {}
+      for (const [month, userIds] of Object.entries(months)) {
+        m[projectId][month] = new Set(userIds)
+      }
+    }
+    return m
+  }
 
   function getCellValue(projectId: string, month: string) {
     const actual = actualHours[projectId]?.[month]
@@ -176,30 +187,12 @@ function ManpowerPage() {
     return new Set(holidays.map((h) => h.date))
   }
 
-  function getWorkingDays(month: string): number {
-    const [y, m] = month.split('-').map(Number)
-    const daysInMonth = new Date(y, m, 0).getDate()
-    const holidaySet = getHolidaySet()
-    let count = 0
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateStr = `${month}-${String(d).padStart(2, '0')}`
-      const dow = new Date(y, m - 1, d).getDay()
-      // Weekdays Mon=1 through Fri=5, and not a public holiday
-      if (dow >= 1 && dow <= 5 && !holidaySet.has(dateStr)) {
-        count++
-      }
-    }
-    return count
-  }
-
   // Sum approved leave hours per month, excluding leave on public holidays
   // (holidays already remove that day via workingDays — double-count guard).
   function getLeaveHoursByMonth(): Record<string, number> {
     const holidaySet = getHolidaySet()
     const result: Record<string, number> = {}
     for (const ld of approvedLeaveDays) {
-      // Double-count guard: leave on a holiday is NOT subtracted again,
-      // because the holiday already removed that day via workingDays.
       if (holidaySet.has(ld.date)) continue
       const m = ld.date.slice(0, 7)
       const hours = ld.type === 'full' ? 8 : 4
@@ -209,8 +202,7 @@ function ManpowerPage() {
   }
 
   function getComputedCapacity(month: string): number {
-    const workingDays = getWorkingDays(month)
-    const base = workingDays * 8 * engineerCount
+    const base = baseCapacity[month] ?? 0
     const leaveHours = getLeaveHoursByMonth()[month] ?? 0
     return base - leaveHours
   }
@@ -312,8 +304,7 @@ function ManpowerPage() {
           <div>
             <p className="text-white text-sm font-medium">Manpower Capacity</p>
             <p className="text-gray-500 text-xs">
-              {engineerCount} engineer{engineerCount !== 1 ? 's' : ''} ·{' '}
-              Computed as (working days − holidays) × 8h × headcount − approved leave
+              Per-engineer active working days × 8, pro-rated by start/end dates
             </p>
           </div>
           <p className="text-gray-500 text-xs">
@@ -337,23 +328,16 @@ function ManpowerPage() {
             <tbody>
               <tr className="border-t border-gray-800">
                 <td className="px-4 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider sticky left-0 bg-gray-900">
-                  Working days
-                </td>
-                {FISCAL_MONTHS.map((m) => (
-                  <td key={m} className="text-center py-1.5 px-1 text-gray-400">
-                    {getWorkingDays(m)}
-                  </td>
-                ))}
-              </tr>
-              <tr className="border-t border-gray-800">
-                <td className="px-4 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider sticky left-0 bg-gray-900">
                   Base capacity
                 </td>
-                {FISCAL_MONTHS.map((m) => (
-                  <td key={m} className="text-center py-1.5 px-1 text-gray-400">
-                    {getWorkingDays(m) * 8 * engineerCount}
-                  </td>
-                ))}
+                {FISCAL_MONTHS.map((m) => {
+                  const base = baseCapacity[m] ?? 0
+                  return (
+                    <td key={m} className="text-center py-1.5 px-1 font-medium text-blue-300">
+                      {base > 0 ? base : 0}
+                    </td>
+                  )
+                })}
               </tr>
               <tr className="border-t border-gray-800">
                 <td className="px-4 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider sticky left-0 bg-gray-900">
@@ -443,36 +427,78 @@ function ManpowerPage() {
           <div className="p-4">
             <div className="flex items-center gap-2 mb-4">
               <input
+                type="date"
                 value={newHolidayDate}
                 onChange={(e) => setNewHolidayDate(e.target.value)}
-                placeholder="2026-08-17"
-                className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs placeholder-gray-600 outline-none focus:border-gray-500 w-28"
+                className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs outline-none focus:border-gray-500 transition-colors [color-scheme:dark] w-40"
               />
-              <input
-                value={newHolidayName}
-                onChange={(e) => setNewHolidayName(e.target.value)}
-                placeholder="Holiday name"
-                className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs placeholder-gray-600 outline-none focus:border-gray-500 flex-1"
-              />
+              <select
+                value={holidayType}
+                onChange={(e) => {
+                  setHolidayType(e.target.value as 'national' | 'other')
+                  if (e.target.value === 'national') setNewHolidayName('National Holiday')
+                }}
+                className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs outline-none focus:border-gray-500 transition-colors"
+              >
+                <option value="national">National Holiday</option>
+                <option value="other">Other</option>
+              </select>
+              {holidayType === 'other' && (
+                <input
+                  value={newHolidayName}
+                  onChange={(e) => setNewHolidayName(e.target.value)}
+                  placeholder="Holiday name"
+                  className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-white text-xs placeholder-gray-600 outline-none focus:border-gray-500 transition-colors flex-1"
+                />
+              )}
               <button
                 onClick={async () => {
-                  if (!newHolidayDate || !newHolidayName) return
-                  await addHoliday({ data: { date: newHolidayDate, name: newHolidayName } })
+                  const name = holidayType === 'national' ? 'National Holiday' : newHolidayName
+                  if (!newHolidayDate || !name) return
+                  await addHoliday({ data: { date: newHolidayDate, name } })
                   const updated = await fetchHolidaysData({ data: { months: FISCAL_MONTHS } })
                   setHolidays(updated as { id: string; date: string; name: string; source: string }[])
                   setNewHolidayDate('')
                   setNewHolidayName('')
+                  setHolidayType('national')
                 }}
                 className="text-xs bg-amber-500 hover:bg-amber-400 text-gray-950 font-medium px-3 py-1.5 rounded-lg transition-colors"
               >
                 Add
               </button>
             </div>
+            <div className="flex items-center gap-1 mb-3 flex-wrap">
+              <button
+                onClick={() => setHolidayFilterMonth(null)}
+                className={`text-[10px] px-2 py-1 rounded border transition-colors ${
+                  holidayFilterMonth === null
+                    ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                    : 'bg-gray-800 border-gray-700 text-gray-500 hover:text-gray-300'
+                }`}
+              >
+                All
+              </button>
+              {FISCAL_MONTHS.map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setHolidayFilterMonth(m)}
+                  className={`text-[10px] px-2 py-1 rounded border transition-colors ${
+                    holidayFilterMonth === m
+                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-400'
+                      : 'bg-gray-800 border-gray-700 text-gray-500 hover:text-gray-300'
+                  }`}
+                >
+                  {monthDisplay(m)}
+                </button>
+              ))}
+            </div>
             <div className="max-h-48 overflow-y-auto space-y-1">
               {holidays.length === 0 ? (
                 <p className="text-gray-600 text-xs">No holidays loaded. Click "Refresh from API" or add manually.</p>
               ) : (
-                holidays.map((h) => (
+                holidays
+                  .filter((h) => !holidayFilterMonth || h.date.startsWith(holidayFilterMonth))
+                  .map((h) => (
                   <div key={h.id} className="flex items-center justify-between py-1.5 px-2 rounded hover:bg-gray-800/40 transition-colors">
                     <div className="flex items-center gap-3">
                       <span className="text-gray-400 text-xs font-mono w-24">{h.date}</span>

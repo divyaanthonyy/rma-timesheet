@@ -148,6 +148,21 @@ export async function deleteLeaveDay(userId: string, date: string) {
     .where(and(eq(leaveDays.userId, userId), eq(leaveDays.date, date)))
 }
 
+
+
+async function ensureUserDateColumns() {
+  const client = createClient({
+    url: process.env.TURSO_DATABASE_URL!,
+    authToken: process.env.TURSO_AUTH_TOKEN!,
+  })
+  try {
+    await client.execute("ALTER TABLE users ADD COLUMN start_date TEXT")
+  } catch { /* already exists */ }
+  try {
+    await client.execute("ALTER TABLE users ADD COLUMN end_date TEXT")
+  } catch { /* already exists */ }
+}
+
 // load all entries for a user for a given month
 export async function loadEntriesForMonth(userId: string, month: string) {
   const db = getDb()
@@ -351,44 +366,56 @@ export async function loadTimesheetStatus(userId: string, month: string) {
 // ── Manpower Loading ─────────────────────────────────────────────────────────
 
 export async function loadCapacityOverrides(months: string[]) {
-  const db = getDb()
-  const rows = await db.select().from(manpowerCapacity)
-  return rows.filter((r) => months.includes(r.month))
+  try {
+    const db = getDb()
+    const rows = await db.select().from(manpowerCapacity)
+    return rows.filter((r) => months.includes(r.month))
+  } catch {
+    return []
+  }
 }
 
 export async function setCapacityOverride(month: string, hours: number) {
-  const db = getDb()
-  const existing = await db
-    .select()
-    .from(manpowerCapacity)
-    .where(eq(manpowerCapacity.month, month))
+  try {
+    const db = getDb()
+    const existing = await db
+      .select()
+      .from(manpowerCapacity)
+      .where(eq(manpowerCapacity.month, month))
 
-  if (existing.length > 0) {
-    await db
-      .update(manpowerCapacity)
-      .set({ overrideHours: hours })
-      .where(eq(manpowerCapacity.id, existing[0].id))
-  } else {
-    await db.insert(manpowerCapacity).values({
-      id: nanoid(),
-      month,
-      overrideHours: hours,
-    })
+    if (existing.length > 0) {
+      await db
+        .update(manpowerCapacity)
+        .set({ overrideHours: hours })
+        .where(eq(manpowerCapacity.id, existing[0].id))
+    } else {
+      await db.insert(manpowerCapacity).values({
+        id: nanoid(),
+        month,
+        overrideHours: hours,
+      })
+    }
+  } catch {
+    // table not yet migrated
   }
 }
 
 export async function clearCapacityOverride(month: string) {
-  const db = getDb()
-  const existing = await db
-    .select()
-    .from(manpowerCapacity)
-    .where(eq(manpowerCapacity.month, month))
+  try {
+    const db = getDb()
+    const existing = await db
+      .select()
+      .from(manpowerCapacity)
+      .where(eq(manpowerCapacity.month, month))
 
-  if (existing.length > 0) {
-    await db
-      .update(manpowerCapacity)
-      .set({ overrideHours: null })
-      .where(eq(manpowerCapacity.id, existing[0].id))
+    if (existing.length > 0) {
+      await db
+        .update(manpowerCapacity)
+        .set({ overrideHours: null })
+        .where(eq(manpowerCapacity.id, existing[0].id))
+    }
+  } catch {
+    // table not yet migrated
   }
 }
 
@@ -481,63 +508,121 @@ export async function loadApprovedTimesheetMonths(months: string[]) {
 // ── Holidays ─────────────────────────────────────────────────────────────────
 
 export async function loadHolidays(months: string[]) {
-  const db = getDb()
-  const rows = await db.select().from(holidays)
-  return rows.filter((r) => months.some((m) => r.date.startsWith(m)))
+  try {
+    const db = getDb()
+    const rows = await db.select().from(holidays)
+    return rows.filter((r) => months.some((m) => r.date.startsWith(m)))
+  } catch {
+    return []
+  }
 }
 
 export async function refreshHolidaysFromApi(year: number) {
-  // Fetch public holidays from Nager.Date; never delete manual rows.
   let apiHolidays: { date: string; localName: string }[] = []
   try {
     const res = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${year}/ID`)
     if (res.ok) apiHolidays = await res.json()
   } catch {
-    // API unreachable — fall back to whatever is cached
     return
   }
 
-  const db = getDb()
-  for (const h of apiHolidays) {
-    // Only upsert if no manual row exists for this date
-    const existing = await db
-      .select()
-      .from(holidays)
-      .where(eq(holidays.date, h.date))
-    if (existing.length > 0 && existing[0].source === 'manual') continue
-
-    if (existing.length > 0) {
-      await db.update(holidays).set({ name: h.localName }).where(eq(holidays.id, existing[0].id))
-    } else {
-      await db.insert(holidays).values({ id: nanoid(), date: h.date, name: h.localName, source: 'api' })
+  try {
+    const db = getDb()
+    for (const h of apiHolidays) {
+      const existing = await db
+        .select()
+        .from(holidays)
+        .where(eq(holidays.date, h.date))
+      if (existing.length > 0 && existing[0].source === 'manual') continue
+      if (existing.length > 0) {
+        await db.update(holidays).set({ name: h.localName }).where(eq(holidays.id, existing[0].id))
+      } else {
+        await db.insert(holidays).values({ id: nanoid(), date: h.date, name: h.localName, source: 'api' })
+      }
     }
+  } catch {
+    // table not yet migrated
   }
 }
 
 export async function addManualHoliday(date: string, name: string) {
-  const db = getDb()
-  await db.insert(holidays).values({ id: nanoid(), date, name, source: 'manual' })
+  try {
+    const db = getDb()
+    await db.insert(holidays).values({ id: nanoid(), date, name, source: 'manual' })
+  } catch {
+    // table not yet migrated
+  }
 }
 
 export async function removeHoliday(id: string) {
-  const db = getDb()
-  await db.delete(holidays).where(eq(holidays.id, id))
+  try {
+    const db = getDb()
+    await db.delete(holidays).where(eq(holidays.id, id))
+  } catch {
+    // table not yet migrated
+  }
 }
 
 // ── Capacity helpers ─────────────────────────────────────────────────────────
 
-export async function getEngineerCount() {
+// Compute base capacity per month = Σ(active working days per engineer × 8).
+// Pro-rating falls out naturally: counting actual active working days per engineer
+// is cleaner than a fractional multiplier. An engineer with no startDate is treated
+// as "active for the whole window" so unmigrated rows don't silently drop to zero.
+export async function computeBaseCapacity(months: string[]) {
+  await ensureUserDateColumns()
   const db = getDb()
-  const rows = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.role, 'engineer'))
-  return rows.length
+
+  const allUsers = await db.select({
+    id: users.id,
+    role: users.role,
+    isEngineer: users.isEngineer,
+    startDate: users.startDate,
+    endDate: users.endDate,
+  }).from(users)
+
+  const engineers = allUsers.filter((u) => u.role === 'engineer' || u.isEngineer)
+
+  // Load holidays
+  let holidayDates = new Set<string>()
+  try {
+    const hRows = await db.select({ date: holidays.date }).from(holidays)
+    holidayDates = new Set(hRows.map((h) => h.date))
+  } catch { /* table may not exist yet */ }
+
+  const result: Record<string, number> = {}
+  for (const m of months) result[m] = 0
+
+  // For each month, for each engineer, count active working days
+  for (const m of months) {
+    const [y, mNum] = m.split('-').map(Number)
+    const daysInMonth = new Date(y, mNum, 0).getDate()
+    let total = 0
+
+    for (const eng of engineers) {
+      for (let d = 1; d <= daysInMonth; d++) {
+        const dateStr = `${m}-${String(d).padStart(2, '0')}`
+        const dow = new Date(y, mNum - 1, d).getDay()
+        // Must be weekday (Mon=1..Fri=5)
+        if (dow === 0 || dow === 6) continue
+        // Must not be a public holiday
+        if (holidayDates.has(dateStr)) continue
+        // Must be on or after startDate (null startDate = active from start)
+        if (eng.startDate && dateStr < eng.startDate) continue
+        // Must be on or before endDate (null endDate = still active)
+        if (eng.endDate && dateStr > eng.endDate) continue
+        total++
+      }
+    }
+    result[m] = total * 8
+  }
+
+  return result
 }
 
 // Load raw approved leave day records for the given months.
-// Returns records with date and type, filtered to approved users and weekdays.
-// Holiday filtering is done in the browser.
+// Returns records with date, type, and userId, filtered to approved users,
+// weekdays, and engineers active on that date. Holiday filtering is done in the browser.
 export async function loadApprovedLeaveDays(months: string[]) {
   const db = getDb()
 
@@ -552,12 +637,31 @@ export async function loadApprovedLeaveDays(months: string[]) {
     }
   }
 
-  const allLeave = await db.select().from(leaveDays)
+  // Load engineer dates for active-on-date check
+  await ensureUserDateColumns()
+  const userDates = await db
+    .select({ id: users.id, role: users.role, isEngineer: users.isEngineer, startDate: users.startDate, endDate: users.endDate })
+    .from(users)
+  const engineerMap = new Map<string, { startDate: string | null; endDate: string | null }>()
+  for (const u of userDates) {
+    if (u.role === 'engineer' || u.isEngineer) {
+      engineerMap.set(u.id, { startDate: u.startDate, endDate: u.endDate })
+    }
+  }
+
+  const allLeave = await db.select({ userId: leaveDays.userId, date: leaveDays.date, type: leaveDays.type }).from(leaveDays)
   const result: { date: string; type: string }[] = []
   for (const ld of allLeave) {
     const m = ld.date.slice(0, 7)
     if (!months.includes(m)) continue
     if (!approvedUsersByMonth[m]?.has(ld.userId)) continue
+
+    // Check engineer was active on the leave date
+    const eng = engineerMap.get(ld.userId)
+    if (!eng) continue
+    if (eng.startDate && ld.date < eng.startDate) continue
+    if (eng.endDate && ld.date > eng.endDate) continue
+
     const day = new Date(ld.date).getDay()
     if (day === 0 || day === 6) continue
     result.push({ date: ld.date, type: ld.type })
@@ -583,8 +687,11 @@ export async function createUserRecord(data: {
   manDayRate: number
   canApprove: boolean
   isEngineer: boolean
+  startDate?: string | null
+  endDate?: string | null
 }) {
   await ensureUsersIsEngineerColumn()
+  await ensureUserDateColumns()
   const db = getDb()
   const existing = await db
     .select()
@@ -613,8 +720,11 @@ export async function updateUserRecord(data: {
   manDayRate: number
   canApprove: boolean
   isEngineer: boolean
+  startDate?: string | null
+  endDate?: string | null
 }) {
   await ensureUsersIsEngineerColumn()
+  await ensureUserDateColumns()
   const db = getDb()
   const existing = await db
     .select({ id: users.id })
@@ -636,6 +746,8 @@ export async function updateUserRecord(data: {
       manDayRate: data.manDayRate,
       canApprove: data.canApprove,
       isEngineer: data.isEngineer,
+      startDate: data.startDate ?? null,
+      endDate: data.endDate ?? null,
     })
     .where(eq(users.id, data.id))
 }

@@ -21,6 +21,8 @@ const addEmployee = createServerFn()
     manDayRate: number
     canApprove: boolean
     isEngineer: boolean
+    startDate?: string | null
+    endDate?: string | null
   }) => data)
   .handler(async ({ data }) => {
     await createUserRecord({ id: data.employeeNumber, ...data })
@@ -37,6 +39,8 @@ const updateEmployee = createServerFn()
     manDayRate: number
     canApprove: boolean
     isEngineer: boolean
+    startDate?: string | null
+    endDate?: string | null
   }) => data)
   .handler(async ({ data }) => {
     await updateUserRecord(data)
@@ -58,6 +62,8 @@ type User = {
   manDayRate: number
   canApprove: boolean
   isEngineer: boolean
+  startDate: string | null
+  endDate: string | null
   createdAt: string | null
 }
 
@@ -73,10 +79,10 @@ export default function EmployeesPage() {
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null)
   const [editEmployee, setEditEmployee] = useState<User | null>(null)
   const [form, setForm] = useState({
-    name: '', email: '', position: '', role: 'engineer', manDayRate: '', canApprove: false, isEngineer: false,
+    name: '', email: '', position: '', role: 'engineer', manDayRate: '', canApprove: false, isEngineer: false, startDate: '', endDate: '',
   })
   const [editForm, setEditForm] = useState({
-    name: '', email: '', position: '', role: 'engineer', manDayRate: '', canApprove: false, isEngineer: false,
+    name: '', email: '', position: '', role: 'engineer', manDayRate: '', canApprove: false, isEngineer: false, startDate: '', endDate: '',
   })
 
   useEffect(() => {
@@ -103,11 +109,13 @@ export default function EmployeesPage() {
         manDayRate: parseFloat(form.manDayRate) || 0,
         canApprove: form.canApprove,
         isEngineer: form.isEngineer,
+        startDate: form.startDate || null,
+        endDate: form.endDate || null,
       },
     })
     const updated = await fetchUsers()
     setUsers(updated as User[])
-    setForm({ name: '', email: '', position: '', role: 'engineer', manDayRate: '', canApprove: false, isEngineer: false })
+    setForm({ name: '', email: '', position: '', role: 'engineer', manDayRate: '', canApprove: false, isEngineer: false, startDate: '', endDate: '' })
     setShowForm(false)
     setSaving(false)
   }
@@ -128,6 +136,8 @@ export default function EmployeesPage() {
         manDayRate: parseFloat(editForm.manDayRate) || 0,
         canApprove: editForm.canApprove,
         isEngineer: editForm.isEngineer,
+        startDate: editForm.startDate || null,
+        endDate: editForm.endDate || null,
       },
     })
 
@@ -248,10 +258,28 @@ export default function EmployeesPage() {
                 </div>
               </>
             )}
+            <div className="col-span-1">
+              <label className="text-gray-500 text-xs mb-1.5 block">Start date</label>
+              <input
+                type="date"
+                value={form.startDate}
+                onChange={(e) => setForm(p => ({ ...p, startDate: e.target.value }))}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-gray-500 transition-colors [color-scheme:dark]"
+              />
+            </div>
+            <div className="col-span-1">
+              <label className="text-gray-500 text-xs mb-1.5 block">End date <span className="text-gray-700">(blank = active)</span></label>
+              <input
+                type="date"
+                value={form.endDate}
+                onChange={(e) => setForm(p => ({ ...p, endDate: e.target.value }))}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-gray-500 transition-colors [color-scheme:dark]"
+              />
+            </div>
           </div>
           <div className="flex gap-2 justify-end">
             <button
-              onClick={() => { setShowForm(false); setForm({ name: '', email: '', position: '', role: 'engineer', manDayRate: '', canApprove: false, isEngineer: false }) }}
+              onClick={() => { setShowForm(false); setForm({ name: '', email: '', position: '', role: 'engineer', manDayRate: '', canApprove: false, isEngineer: false, startDate: '', endDate: '' }) }}
               className="text-xs bg-gray-800 hover:bg-gray-700 text-gray-300 px-4 py-2 rounded-lg border border-gray-700 transition-colors"
             >
               Cancel
@@ -336,6 +364,8 @@ export default function EmployeesPage() {
                             manDayRate: String(u.manDayRate),
                             canApprove: u.canApprove,
                             isEngineer: u.isEngineer,
+                            startDate: u.startDate ?? '',
+                            endDate: u.endDate ?? '',
                           })
                         }}
                         className="text-xs text-gray-400 hover:text-white transition-colors"
@@ -443,6 +473,24 @@ export default function EmployeesPage() {
                   </div>
                 </>
               )}
+              <div className="col-span-1">
+                <label className="text-gray-500 text-xs mb-1.5 block">Start date</label>
+                <input
+                  type="date"
+                  value={editForm.startDate}
+                  onChange={(e) => setEditForm(p => ({ ...p, startDate: e.target.value }))}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-gray-500 transition-colors [color-scheme:dark]"
+                />
+              </div>
+              <div className="col-span-1">
+                <label className="text-gray-500 text-xs mb-1.5 block">End date <span className="text-gray-700">(blank = active)</span></label>
+                <input
+                  type="date"
+                  value={editForm.endDate}
+                  onChange={(e) => setEditForm(p => ({ ...p, endDate: e.target.value }))}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-gray-500 transition-colors [color-scheme:dark]"
+                />
+              </div>
             </div>
             <div className="flex gap-3 justify-end">
               <button
