@@ -4,16 +4,25 @@
   "compatibility_date": "2025-09-02",
   "compatibility_flags": ["nodejs_compat"],
   "main": "@tanstack/react-start/server-entry",
-  "vars": {
-    "TURSO_DATABASE_URL": "",
-    "BETTER_AUTH_URL": "",
-    "GOOGLE_CLIENT_ID": ""
+  "observability": {
+    "logs": {
+      "enabled": false,
+      "invocation_logs": true
+    }
   },
-  "secrets": {
-    "required": [
-      "TURSO_AUTH_TOKEN",
-      "GOOGLE_CLIENT_SECRET",
-      "BETTER_AUTH_SECRET"
-    ]
+  "env": {
+    "development": {
+      "vars": {
+        "TURSO_DATABASE_URL": "libsql://rma-timesheet-dev-aliabanana.aws-ap-northeast-1.turso.io",
+        "GOOGLE_CLIENT_ID": "1015162552530-tnlsjlv2n2i2andrn5cpbv15v454h52m.apps.googleusercontent.com"
+      }
+    },
+    "production": {
+      "vars": {
+        "TURSO_DATABASE_URL": "libsql://rma-timesheet-dev-aliabanana.aws-ap-northeast-1.turso.io",
+        "GOOGLE_CLIENT_ID": "1015162552530-tnlsjlv2n2i2andrn5cpbv15v454h52m.apps.googleusercontent.com",
+        "BETTER_AUTH_URL": "https://tanstack-start-app.rma-fiventures-ap.workers.dev"
+      }
+    }
   }
 }

@@ -6,15 +6,15 @@
     "#/*": "./src/*"
   },
   "scripts": {
-    "dev": "vite dev --port 3000",
-    "generate-routes": "tsr generate",
+   "dev": "CLOUDFLARE_ENV=development vite dev --port 3000",
+   "generate-routes": "tsr generate",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "lint": "eslint",
     "format": "prettier --write . && eslint --fix",
     "check": "prettier --check .",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "npm run build && wrangler deploy --env production",
     "db:push": "drizzle-kit push",
     "db:seed": "dotenv-cli -e .env -- npx tsx src/db/seed.ts"
   },
