@@ -6,7 +6,7 @@ import {
   loadManpowerEntries, upsertManpowerEntry, loadActualHoursByProjectMonth,
   loadWhoLoggedTimeByProjectMonth, loadApprovedTimesheetMonths,
   loadHolidays, refreshHolidaysFromApi, addManualHoliday, removeHoliday,
-  computeBaseCapacity, loadApprovedLeaveDays,
+  computeBaseCapacity, loadNonChargeEntries, upsertNonChargeEntry,
 } from '../../db/queries'
 import { ComposedChart, Bar, Line, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, CartesianGrid } from 'recharts'
 
@@ -59,10 +59,6 @@ const fetchBaseCapacity = createServerFn()
   .validator((data: { months: string[] }) => data)
   .handler(async ({ data }) => computeBaseCapacity(data.months))
 
-const fetchApprovedLeave = createServerFn()
-  .validator((data: { months: string[] }) => data)
-  .handler(async ({ data }) => loadApprovedLeaveDays(data.months))
-
 const fetchEntries = createServerFn()
   .validator((data: { months: string[] }) => data)
   .handler(async ({ data }) => loadManpowerEntries(data.months))
@@ -83,7 +79,25 @@ const fetchWhoLogged = createServerFn()
   .validator((data: { months: string[] }) => data)
   .handler(async ({ data }) => loadWhoLoggedTimeByProjectMonth(data.months))
 
+const fetchNonCharge = createServerFn()
+  .validator((data: { months: string[] }) => data)
+  .handler(async ({ data }) => loadNonChargeEntries(data.months))
+
+const saveNonCharge = createServerFn()
+  .validator((data: { category: string; month: string; hours: number }) => data)
+  .handler(async ({ data }) => upsertNonChargeEntry(data.category, data.month, data.hours))
+
 type Project = { id: string; name: string; client: string | null; category: string | null; startMonth: string | null; endMonth: string | null; rfJobCode: string | null }
+
+const NC_CATEGORIES = ['nc_annual_leave', 'nc_sick_leave', 'nc_maternity_leave', 'nc_training', 'nc_meeting', 'nc_other']
+const NC_LABELS: Record<string, string> = {
+  nc_annual_leave: 'Annual Leave',
+  nc_sick_leave: 'Sick Leave',
+  nc_maternity_leave: 'Maternity Leave',
+  nc_training: 'Training',
+  nc_meeting: 'Internal Engineering Meeting',
+  nc_other: 'Others',
+}
 
 function ManpowerPage() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -94,7 +108,8 @@ function ManpowerPage() {
   const [whoLogged, setWhoLogged] = useState<Record<string, Record<string, Set<string>>>>({})
   const [holidays, setHolidays] = useState<{ id: string; date: string; name: string; source: string }[]>([])
   const [baseCapacity, setBaseCapacity] = useState<Record<string, number>>({})
-  const [approvedLeaveDays, setApprovedLeaveDays] = useState<{ date: string; type: string }[]>([])
+  const [ncEntries, setNcEntries] = useState<Record<string, Record<string, number>>>({}) // [category][month] = hours
+  const [ncStatus, setNcStatus] = useState<'saved' | 'saving' | 'unsaved' | 'error'>('saved')
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState<'backlog' | 'forecast' | 'all'>('backlog')
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'error'>('saved')
@@ -105,11 +120,12 @@ function ManpowerPage() {
   const [holidayType, setHolidayType] = useState<'national' | 'other'>('national')
   const [holidayFilterMonth, setHolidayFilterMonth] = useState<string | null>(null)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const ncDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     async function load() {
       try {
-        const [pData, oData, eData, aData, apData, wData, hData, bData, lData] = await Promise.all([
+        const [pData, oData, eData, aData, apData, wData, hData, bData, nData] = await Promise.all([
           fetchProjects().catch(() => []),
           fetchOverrides({ data: { months: FISCAL_MONTHS } }).catch(() => []),
           fetchEntries({ data: { months: FISCAL_MONTHS } }).catch(() => []),
@@ -118,7 +134,7 @@ function ManpowerPage() {
           fetchWhoLogged({ data: { months: FISCAL_MONTHS } }).catch(() => ({})),
           fetchHolidaysData({ data: { months: FISCAL_MONTHS } }).catch(() => []),
           fetchBaseCapacity({ data: { months: FISCAL_MONTHS } }).catch(() => ({})),
-          fetchApprovedLeave({ data: { months: FISCAL_MONTHS } }).catch(() => []),
+          fetchNonCharge({ data: { months: FISCAL_MONTHS } }).catch(() => []),
         ])
 
         setProjects(pData as Project[])
@@ -129,7 +145,13 @@ function ManpowerPage() {
         setWhoLogged(whoMapFrom(wData))
         setHolidays(hData as { id: string; date: string; name: string; source: string }[])
         setBaseCapacity(bData as Record<string, number>)
-        setApprovedLeaveDays(lData as { date: string; type: string }[])
+
+        const nc: Record<string, Record<string, number>> = {}
+        for (const row of nData as { category: string; month: string; hours: number }[]) {
+          if (!nc[row.category]) nc[row.category] = {}
+          nc[row.category][row.month] = row.hours
+        }
+        setNcEntries(nc)
       } finally {
         setLoading(false)
       }
@@ -181,37 +203,118 @@ function ManpowerPage() {
     }
   }
 
-  // ── Capacity computation (live — never persisted) ──────────────────────────
-
-  function getHolidaySet(): Set<string> {
-    return new Set(holidays.map((h) => h.date))
-  }
-
-  // Sum approved leave hours per month, excluding leave on public holidays
-  // (holidays already remove that day via workingDays — double-count guard).
-  function getLeaveHoursByMonth(): Record<string, number> {
-    const holidaySet = getHolidaySet()
-    const result: Record<string, number> = {}
-    for (const ld of approvedLeaveDays) {
-      if (holidaySet.has(ld.date)) continue
-      const m = ld.date.slice(0, 7)
-      const hours = ld.type === 'full' ? 8 : 4
-      result[m] = (result[m] ?? 0) + hours
-    }
-    return result
-  }
-
-  function getComputedCapacity(month: string): number {
-    const base = baseCapacity[month] ?? 0
-    const leaveHours = getLeaveHoursByMonth()[month] ?? 0
-    return base - leaveHours
-  }
+  // ── Capacity computation (Model B: no leave subtraction) ────────────────────
 
   function getEffectiveCapacity(month: string): number {
     const override = overrides[month]
     if (override != null) return override
-    const computed = getComputedCapacity(month)
-    return Math.max(0, computed)
+    const base = baseCapacity[month] ?? 0
+    return Math.max(0, base)
+  }
+
+  function projectsByCategory(cats: string[]) {
+    return projects.filter((p) => cats.includes(p.category ?? ''))
+  }
+
+  function sumCategory(month: string, projects: Project[]): number {
+    return projects.reduce((sum, p) => sum + getCellValue(p.id, month).value, 0)
+  }
+
+  const backlogProjects = projectsByCategory(['backlog'])
+  const forecastProjects = projectsByCategory(['forecast'])
+
+  function getBacklogTotal(month: string) { return sumCategory(month, backlogProjects) }
+  function getForecastTotal(month: string) { return sumCategory(month, forecastProjects) }
+  function getNCTotal(month: string) {
+    return NC_CATEGORIES.reduce((sum, cat) => sum + (ncEntries[cat]?.[month] ?? 0), 0)
+  }
+
+  function getEfficiency(month: string, numerator: number) {
+    const cap = getEffectiveCapacity(month)
+    if (cap <= 0) return null
+    return ((numerator / cap) * 100).toFixed(2)
+  }
+
+  function renderProjectTable(title: string, projectList: Project[], months: string[]) {
+    const isEmpty = projectList.length === 0
+    return (
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
+        <div className="px-4 py-3 border-b border-gray-800">
+          <p className="text-white text-sm font-medium">{title}</p>
+          <p className="text-gray-500 text-xs">{projectList.length} project{projectList.length !== 1 ? 's' : ''}</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-gray-800/50">
+                <th className="text-left text-gray-400 font-normal px-4 py-2 w-12 sticky left-0 bg-gray-800/50 z-10">No.</th>
+                <th className="text-left text-gray-400 font-normal px-4 py-2 w-48 sticky left-12 bg-gray-800/50 z-10">Project</th>
+                {months.map((m) => (
+                  <th key={m} className="text-center font-normal py-2 px-1 min-w-[72px] text-gray-400">{monthDisplay(m)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {isEmpty ? (
+                <tr>
+                  <td colSpan={14} className="px-4 py-8 text-center text-gray-600 text-sm">No projects in this category.</td>
+                </tr>
+              ) : (
+                projectList.map((project, pi) => (
+                  <tr key={project.id} className="border-t border-gray-800 hover:bg-gray-800/20">
+                    <td className="px-4 py-1.5 text-gray-500 font-mono text-[10px] sticky left-0 bg-gray-900">{pi + 1}</td>
+                    <td className={`px-4 py-1.5 font-medium sticky left-12 bg-gray-900 ${projectColor(project.category)}`}>
+                      <div>
+                        <p>{project.name}</p>
+                        {project.client && <p className="text-gray-600 text-[10px] font-normal">{project.client}</p>}
+                      </div>
+                    </td>
+                    {months.map((m) => {
+                      const cell = getCellValue(project.id, m)
+                      const isManual = cell.source === 'manual'
+                      return (
+                        <td key={m} className="p-0">
+                          {isManual ? (
+                            <input
+                              type="number" min={0}
+                              value={cell.value > 0 ? cell.value : ''}
+                              onChange={(e) => handleChange(project.id, m, e.target.value)}
+                              placeholder="—"
+                              className={`w-full text-center py-1.5 px-1 bg-transparent text-xs outline-none focus:bg-gray-800 rounded transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${'text-blue-300'}`}
+                            />
+                          ) : (
+                            <div className={`w-full text-center py-1.5 px-1 ${cell.source === 'confirmed_actual' ? 'text-white' : 'text-amber-300'}`}>
+                              {cell.value}
+                            </div>
+                          )}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))
+              )}
+              {/* Total row */}
+              {!isEmpty && (
+                <tr className="border-t border-gray-700 bg-gray-800/30">
+                  <td className="px-4 py-1.5 sticky left-0 bg-gray-800/30" />
+                  <td className="px-4 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider sticky left-12 bg-gray-800/30">
+                    Total {title}
+                  </td>
+                  {months.map((m) => {
+                    const total = sumCategory(m, projectList)
+                    return (
+                      <td key={m} className={`text-center py-1.5 font-medium ${total > 0 ? 'text-white' : 'text-gray-700'}`}>
+                        {total > 0 ? total : '—'}
+                      </td>
+                    )
+                  })}
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    )
   }
 
   function handleChange(projectId: string, month: string, raw: string) {
@@ -262,21 +365,12 @@ function ManpowerPage() {
     await clearOverride({ data: { month } })
   }
 
-  function getColumnTotal(month: string) {
-    return filteredProjects.reduce((sum, p) => sum + getCellValue(p.id, month).value, 0)
+  // Project row color by category
+  function projectColor(cat: string | null) {
+    if (cat === 'forecast') return 'text-pink-400'
+    if (cat && cat.startsWith('nc_')) return 'text-gray-400'
+    return 'text-amber-400'
   }
-
-  function getEfficiency(month: string) {
-    const total = getColumnTotal(month)
-    const cap = getEffectiveCapacity(month)
-    if (cap <= 0) return null
-    return ((total / cap) * 100).toFixed(1)
-  }
-
-  const filteredProjects = projects.filter((p) => {
-    if (filter === 'all') return true
-    return p.category === filter
-  })
 
   if (loading) {
     return <p className="text-gray-500 text-sm">Loading manpower data...</p>
@@ -339,31 +433,18 @@ function ManpowerPage() {
                   )
                 })}
               </tr>
-              <tr className="border-t border-gray-800">
-                <td className="px-4 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider sticky left-0 bg-gray-900">
-                  − Approved leave
-                </td>
-                {FISCAL_MONTHS.map((m) => {
-                  const lh = getLeaveHoursByMonth()[m] ?? 0
-                  return (
-                    <td key={m} className={`text-center py-1.5 px-1 ${lh > 0 ? 'text-red-400' : 'text-gray-700'}`}>
-                      {lh > 0 ? lh : '—'}
-                    </td>
-                  )
-                })}
-              </tr>
               <tr className="border-t border-gray-700 bg-gray-800/30">
                 <td className="px-4 py-1.5 text-gray-400 font-medium sticky left-0 bg-gray-800/30">
-                  Computed capacity
+                  Gross capacity
                 </td>
                 {FISCAL_MONTHS.map((m) => {
-                  const comp = getComputedCapacity(m)
+                  const cap = baseCapacity[m] ?? 0
                   const overridden = overrides[m] != null
                   return (
                     <td key={m} className={`text-center py-1.5 px-1 font-medium ${
                       overridden ? 'text-gray-600 line-through' : 'text-blue-300'
                     }`}>
-                      {comp > 0 ? comp : 0}
+                      {cap > 0 ? cap : 0}
                     </td>
                   )
                 })}
@@ -380,7 +461,7 @@ function ManpowerPage() {
                         <input
                           type="number"
                           min={0}
-                          value={overrides[m] ?? getComputedCapacity(m)}
+                          value={overrides[m] ?? (baseCapacity[m] ?? 0)}
                           onChange={(e) => handleCapacityChange(m, e.target.value)}
                           placeholder="—"
                           className={`w-full text-center py-1.5 px-1 bg-transparent text-xs outline-none focus:bg-gray-800 rounded transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
@@ -558,146 +639,152 @@ function ManpowerPage() {
         ))}
       </div>
 
-      {/* ── Project Tables ── */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+      {/* ── Backlog & New Projects ── */}
+      {(filter === 'backlog' || filter === 'all') && renderProjectTable('Backlog & New Projects', backlogProjects, FISCAL_MONTHS)}
+
+      {/* ── Forecast Projects ── */}
+      {(filter === 'forecast' || filter === 'all') && renderProjectTable('Forecast Projects', forecastProjects, FISCAL_MONTHS)}
+
+      {/* ── Non-Charge Hours ── */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between">
+          <div>
+            <p className="text-white text-sm font-medium">Non-Charge Hours</p>
+            <p className="text-gray-500 text-xs">Type hours per category per month</p>
+          </div>
+          <p className="text-gray-500 text-xs">
+            {ncStatus === 'saving' ? '⏳ Saving...' : ncStatus === 'unsaved' ? '● Unsaved' : ncStatus === 'error' ? '✕ Save failed' : ''}
+          </p>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr className="bg-gray-800/50">
-                <th className="text-left text-gray-400 font-normal px-4 py-2 w-12 sticky left-0 bg-gray-800/50 z-10">
-                  No.
-                </th>
-                <th className="text-left text-gray-400 font-normal px-4 py-2 w-48 sticky left-12 bg-gray-800/50 z-10">
-                  Project
-                </th>
+                <th className="text-left text-gray-400 font-normal px-4 py-2 w-44 sticky left-0 bg-gray-800/50 z-10">Category</th>
                 {FISCAL_MONTHS.map((m) => (
-                  <th key={m} className="text-center font-normal py-2 px-1 min-w-[72px] text-gray-400">
-                    {monthDisplay(m)}
-                  </th>
+                  <th key={m} className="text-center font-normal py-2 px-1 min-w-[72px] text-gray-400">{monthDisplay(m)}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {filteredProjects.length === 0 ? (
-                <tr>
-                  <td colSpan={14} className="px-4 py-8 text-center text-gray-600 text-sm">
-                    No projects in this category.
-                  </td>
-                </tr>
-              ) : (
-                filteredProjects.map((project, pi) => (
-                  <tr key={project.id} className="border-t border-gray-800 hover:bg-gray-800/20">
-                    <td className="px-4 py-1.5 text-gray-500 font-mono text-[10px] sticky left-0 bg-gray-900">
-                      {pi + 1}
-                    </td>
-                    <td className={`px-4 py-1.5 font-medium sticky left-12 bg-gray-900 ${
-                      project.category === 'forecast' ? 'text-pink-400' : 'text-amber-400'
-                    }`}>
-                      <div>
-                        <p>{project.name}</p>
-                        {project.client && (
-                          <p className="text-gray-600 text-[10px] font-normal">{project.client}</p>
-                        )}
-                      </div>
-                    </td>
-                    {FISCAL_MONTHS.map((m) => {
-                      const cell = getCellValue(project.id, m)
-                      const isManual = cell.source === 'manual'
-                      return (
-                        <td key={m} className="p-0">
-                          {isManual ? (
-                            <input
-                              type="number"
-                              min={0}
-                              value={cell.value > 0 ? cell.value : ''}
-                              onChange={(e) => handleChange(project.id, m, e.target.value)}
-                              placeholder="—"
-                              className={`w-full text-center py-1.5 px-1 bg-transparent text-xs outline-none focus:bg-gray-800 rounded transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none ${
-                                cell.source === 'manual' ? 'text-blue-300' : ''
-                              }`}
-                            />
-                          ) : (
-                            <div className={`w-full text-center py-1.5 px-1 ${
-                              cell.source === 'confirmed_actual' ? 'text-white' : 'text-amber-300'
-                            }`}>
-                              {cell.value}
-                            </div>
-                          )}
-                        </td>
-                      )
-                    })}
-                  </tr>
-                ))
-              )}
-
-              {/* Total row */}
-              {filteredProjects.length > 0 && (
-                <tr className="border-t border-gray-700 bg-gray-800/30">
-                  <td className="px-4 py-1.5 sticky left-0 bg-gray-800/30" />
-                  <td className="px-4 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider sticky left-12 bg-gray-800/30">
-                    Total
+              {NC_CATEGORIES.map((cat) => (
+                <tr key={cat} className="border-t border-gray-800 hover:bg-gray-800/20">
+                  <td className="px-4 py-1.5 text-gray-400 text-xs sticky left-0 bg-gray-900">
+                    {NC_LABELS[cat]}
                   </td>
                   {FISCAL_MONTHS.map((m) => {
-                    const total = getColumnTotal(m)
+                    const val = ncEntries[cat]?.[m]
                     return (
-                      <td key={m} className={`text-center py-1.5 font-medium ${
-                        total > 0 ? 'text-white' : 'text-gray-700'
-                      }`}>
-                        {total > 0 ? total : '—'}
+                      <td key={m} className="p-0">
+                        <input
+                          type="number" min={0}
+                          value={val ?? ''}
+                          onChange={(e) => {
+                            const clamped = e.target.value === '' || isNaN(parseInt(e.target.value)) ? 0 : Math.max(0, parseInt(e.target.value))
+                            setNcEntries((prev) => {
+                              const next = { ...prev }
+                              if (!next[cat]) next[cat] = {}
+                              next[cat] = { ...next[cat], [m]: clamped }
+                              return next
+                            })
+                            setNcStatus('unsaved')
+                            if (ncDebounceRef.current) clearTimeout(ncDebounceRef.current)
+                            ncDebounceRef.current = setTimeout(async () => {
+                              try {
+                                setNcStatus('saving')
+                                await saveNonCharge({ data: { category: cat, month: m, hours: clamped } })
+                                setNcStatus('saved')
+                              } catch { setNcStatus('error') }
+                            }, 600)
+                          }}
+                          placeholder="—"
+                          className="w-full text-center py-1.5 px-1 bg-transparent text-xs text-blue-300 outline-none focus:bg-gray-800 rounded transition-colors [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        />
                       </td>
                     )
                   })}
                 </tr>
-              )}
+              ))}
+              {/* Total NC row */}
+              <tr className="border-t border-gray-700 bg-gray-800/30">
+                <td className="px-4 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider sticky left-0 bg-gray-800/30">
+                  Total Non-Charge
+                </td>
+                {FISCAL_MONTHS.map((m) => {
+                  const total = NC_CATEGORIES.reduce((sum, cat) => sum + (ncEntries[cat]?.[m] ?? 0), 0)
+                  return (
+                    <td key={m} className={`text-center py-1.5 font-medium ${total > 0 ? 'text-white' : 'text-gray-700'}`}>
+                      {total > 0 ? total : '—'}
+                    </td>
+                  )
+                })}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
 
-              {/* Efficiency row */}
-              {filteredProjects.length > 0 && (
-                <tr className="border-t border-gray-700 bg-gray-800/20">
-                  <td className="px-4 py-1.5 sticky left-0 bg-gray-800/20" />
-                  <td className="px-4 py-1.5 text-gray-500 text-[10px] uppercase tracking-wider sticky left-12 bg-gray-800/20">
-                    Efficiency
+      {/* ── Efficiency Summary ── */}
+      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mt-6">
+        <div className="px-4 py-3 border-b border-gray-800">
+          <p className="text-white text-sm font-medium">Efficiency per month</p>
+          <p className="text-gray-500 text-xs">Each slice as % of effective capacity</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-gray-800/50">
+                <th className="text-left text-gray-400 font-normal px-4 py-2 w-40 sticky left-0 bg-gray-800/50">Category</th>
+                {FISCAL_MONTHS.map((m) => (
+                  <th key={m} className="text-center font-normal py-2 px-1 min-w-[72px] text-gray-400">{monthDisplay(m)}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { label: 'Backlog %', getter: getBacklogTotal, color: 'text-emerald-400' },
+                { label: 'Forecast %', getter: getForecastTotal, color: 'text-pink-400' },
+                { label: 'Non-charge %', getter: getNCTotal, color: 'text-gray-400' },
+              ].map((row) => (
+                <tr key={row.label} className="border-t border-gray-800">
+                  <td className={`px-4 py-1.5 text-[10px] uppercase tracking-wider sticky left-0 bg-gray-900 ${row.color}`}>
+                    {row.label}
                   </td>
                   {FISCAL_MONTHS.map((m) => {
-                    const eff = getEfficiency(m)
+                    const eff = getEfficiency(m, row.getter(m))
                     return (
                       <td key={m} className={`text-center py-1.5 font-medium ${
-                        eff !== null ? (parseFloat(eff) >= 100 ? 'text-emerald-400' : 'text-amber-400') : 'text-gray-700'
+                        eff !== null ? row.color : 'text-gray-700'
                       }`}>
                         {eff !== null ? `${eff}%` : '—'}
                       </td>
                     )
                   })}
                 </tr>
-              )}
+              ))}
             </tbody>
           </table>
         </div>
+      </div>
 
-        <div className="px-4 py-3 border-t border-gray-800 flex items-center justify-between">
-          <p className="text-gray-600 text-xs">
-            <span className="text-blue-300">Blue</span> = manual estimate ·{' '}
-            <span className="text-amber-300">Amber</span> = actual (pending approval) ·{' '}
-            <span className="text-white">White</span> = actual (approved)
-          </p>
-          <p className="text-gray-500 text-xs">Fiscal year April 2026 – March 2027</p>
-        </div>
+      <div className="px-4 py-3 border-t border-gray-800 flex items-center justify-between">
+        <p className="text-gray-600 text-xs">
+          <span className="text-blue-300">Blue</span> = manual estimate ·{' '}
+          <span className="text-amber-300">Amber</span> = actual (pending approval) ·{' '}
+          <span className="text-white">White</span> = actual (approved)
+        </p>
+        <p className="text-gray-500 text-xs">Fiscal year April 2026 – March 2027</p>
       </div>
 
       {/* ── Chart ── */}
       {(() => {
         const chartData = FISCAL_MONTHS.map((m) => {
-          let backlog = 0
-          let forecast = 0
-          for (const p of projects) {
-            const cell = getCellValue(p.id, m)
-            if (p.category === 'backlog') backlog += cell.value
-            else forecast += cell.value
-          }
           const cap = getEffectiveCapacity(m)
           return {
             month: monthDisplay(m),
-            backlog,
-            forecast,
+            backlog: getBacklogTotal(m),
+            forecast: getForecastTotal(m),
+            nonCharge: getNCTotal(m),
             capacity: cap > 0 ? cap : null,
           }
         })
@@ -706,7 +793,7 @@ function ManpowerPage() {
           <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mt-6">
             <div className="px-4 py-3 border-b border-gray-800">
               <p className="text-white text-sm font-medium">Manpower loading — monthly</p>
-              <p className="text-gray-500 text-xs">Stacked bars: backlog + forecast projects · Line: capacity ceiling</p>
+              <p className="text-gray-500 text-xs">Stacked bars: backlog + forecast + non-charge · Line: capacity ceiling</p>
             </div>
             <div className="p-4">
               <ResponsiveContainer width="100%" height={320}>
@@ -728,16 +815,17 @@ function ManpowerPage() {
                     content={({ active, payload, label }: any) => {
                       if (!active || !payload?.length) return null
                       const p = payload[0].payload
-                      const total = (p.backlog ?? 0) + (p.forecast ?? 0)
+                      const total = (p.backlog ?? 0) + (p.forecast ?? 0) + (p.nonCharge ?? 0)
                       const cap = p.capacity
-                      const util = cap != null && cap > 0 ? ` ${((total / cap) * 100).toFixed(1)}%` : ' —'
+                      const blEff = cap != null && cap > 0 ? ((p.backlog / cap) * 100).toFixed(1) : '—'
                       return (
                         <div className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs shadow-xl">
                           <p className="text-gray-200 font-medium mb-1.5">{label}</p>
                           <p className="text-emerald-400">Backlog: {p.backlog}h</p>
-                          <p className="text-amber-400">Forecast: {p.forecast}h</p>
+                          <p className="text-pink-400">Forecast: {p.forecast}h</p>
+                          <p className="text-gray-400">Non-charge: {p.nonCharge}h</p>
                           {p.capacity != null && <p className="text-gray-300">Capacity: {p.capacity}h</p>}
-                          <p className="text-gray-400 mt-1 border-t border-gray-700 pt-1">Utilisation: {util}</p>
+                          <p className="text-gray-400 mt-1 border-t border-gray-700 pt-1">Total: {total}h · BL utilisation: {blEff}%</p>
                         </div>
                       )
                     }}
@@ -747,11 +835,13 @@ function ManpowerPage() {
                     formatter={(value: string) => {
                       if (value === 'backlog') return 'Backlog & New Projects'
                       if (value === 'forecast') return 'Forecast Projects'
+                      if (value === 'nonCharge') return 'Non-Charge Hours'
                       return value
                     }}
                   />
                   <Bar dataKey="backlog" stackId="load" fill="#34d399" radius={[2, 2, 0, 0]} />
                   <Bar dataKey="forecast" stackId="load" fill="#f59e0b" radius={[2, 2, 0, 0]} />
+                  <Bar dataKey="nonCharge" stackId="load" fill="#6b7280" radius={[2, 2, 0, 0]} />
                   <Line
                     type="monotone"
                     dataKey="capacity"

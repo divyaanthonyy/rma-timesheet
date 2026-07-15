@@ -1,9 +1,10 @@
 import { drizzle } from 'drizzle-orm/libsql'
 import { createClient } from '@libsql/client'
 import { eq, and, lte, gte, or, isNull, desc } from 'drizzle-orm'
-import { timesheetEntries, timesheets, userProjects, projects, users, timesheetHistory, leaveDays, manpowerCapacity, manpowerEntries, holidays } from './schema'
+import { timesheetEntries, timesheets, userProjects, projects, users, timesheetHistory, leaveDays, manpowerCapacity, manpowerEntries, holidays, nonChargeCategories } from './schema'
 import * as schema from './schema'
 import { nanoid } from 'nanoid'
+import { monthMeta } from '../lib/month'
 
 function getDb() {
   const client = createClient({
@@ -563,6 +564,49 @@ export async function removeHoliday(id: string) {
   }
 }
 
+// ── Non-charge categories ─────────────────────────────────────────────────────
+
+async function ensureNonChargeCategoriesTable() {
+  const client = createClient({
+    url: process.env.TURSO_DATABASE_URL!,
+    authToken: process.env.TURSO_AUTH_TOKEN!,
+  })
+  await client.execute(`
+    CREATE TABLE IF NOT EXISTS non_charge_categories (
+      id TEXT PRIMARY KEY,
+      category TEXT NOT NULL,
+      month TEXT NOT NULL,
+      hours INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (CURRENT_TIMESTAMP)
+    )
+  `)
+}
+
+export async function loadNonChargeEntries(months: string[]) {
+  await ensureNonChargeCategoriesTable()
+  const db = getDb()
+  const rows = await db.select().from(nonChargeCategories)
+  return rows.filter((r) => months.includes(r.month))
+}
+
+export async function upsertNonChargeEntry(category: string, month: string, hours: number) {
+  await ensureNonChargeCategoriesTable()
+  const db = getDb()
+  const existing = await db
+    .select()
+    .from(nonChargeCategories)
+    .where(and(eq(nonChargeCategories.category, category), eq(nonChargeCategories.month, month)))
+
+  if (existing.length > 0) {
+    await db
+      .update(nonChargeCategories)
+      .set({ hours })
+      .where(eq(nonChargeCategories.id, existing[0].id))
+  } else {
+    await db.insert(nonChargeCategories).values({ id: nanoid(), category, month, hours })
+  }
+}
+
 // ── Capacity helpers ─────────────────────────────────────────────────────────
 
 // Compute base capacity per month = Σ(active working days per engineer × 8).
@@ -595,16 +639,15 @@ export async function computeBaseCapacity(months: string[]) {
 
   // For each month, for each engineer, count active working days
   for (const m of months) {
-    const [y, mNum] = m.split('-').map(Number)
-    const daysInMonth = new Date(y, mNum, 0).getDate()
+    const meta = monthMeta(m)
+    const weekendSet = new Set(meta.weekends)
     let total = 0
 
     for (const eng of engineers) {
-      for (let d = 1; d <= daysInMonth; d++) {
+      for (const d of meta.days) {
         const dateStr = `${m}-${String(d).padStart(2, '0')}`
-        const dow = new Date(y, mNum - 1, d).getDay()
-        // Must be weekday (Mon=1..Fri=5)
-        if (dow === 0 || dow === 6) continue
+        // Must be weekday (Mon–Fri, not in weekends set)
+        if (weekendSet.has(d)) continue
         // Must not be a public holiday
         if (holidayDates.has(dateStr)) continue
         // Must be on or after startDate (null startDate = active from start)

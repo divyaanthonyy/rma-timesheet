@@ -92,6 +92,16 @@ export const holidays = sqliteTable('holidays', {
   createdAt: text('created_at').default(sql`(current_timestamp)`),
 })
 
+export const nonChargeCategories = sqliteTable('non_charge_categories', {
+  id: text('id').primaryKey(),
+  category: text('category').notNull(),
+  month: text('month').notNull(),
+  hours: integer('hours').notNull().default(0),
+  createdAt: text('created_at').default(sql`(current_timestamp)`),
+}, (table) => ({
+  uniqueCategoryMonth: unique().on(table.category, table.month),
+}))
+
 export const manpowerEntries = sqliteTable('manpower_entries', {
   id: text('id').primaryKey(),
   projectId: text('project_id').notNull().references(() => projects.id),

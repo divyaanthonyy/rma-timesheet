@@ -256,8 +256,18 @@ export default function ProjectsPage() {
                 onChange={(e) => setForm(p => ({ ...p, category: e.target.value }))}
                 className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-gray-500 transition-colors"
               >
-                <option value="backlog">Backlog & New Projects</option>
-                <option value="forecast">Forecast Projects</option>
+                <optgroup label="Billable">
+                  <option value="backlog">Backlog & New Projects</option>
+                  <option value="forecast">Forecast Projects</option>
+                </optgroup>
+                <optgroup label="Non-Charge">
+                  <option value="nc_annual_leave">Annual Leave</option>
+                  <option value="nc_sick_leave">Sick Leave</option>
+                  <option value="nc_maternity_leave">Maternity Leave</option>
+                  <option value="nc_training">Training</option>
+                  <option value="nc_meeting">Internal Engineering Meeting</option>
+                  <option value="nc_other">Others</option>
+                </optgroup>
               </select>
             </div>
             <div>
@@ -523,8 +533,18 @@ export default function ProjectsPage() {
                   onChange={(e) => setEditForm(p => ({ ...p, category: e.target.value }))}
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm outline-none focus:border-gray-500 transition-colors"
                 >
-                  <option value="backlog">Backlog & New Projects</option>
-                  <option value="forecast">Forecast Projects</option>
+                  <optgroup label="Billable">
+                    <option value="backlog">Backlog & New Projects</option>
+                    <option value="forecast">Forecast Projects</option>
+                  </optgroup>
+                  <optgroup label="Non-Charge">
+                    <option value="nc_annual_leave">Annual Leave</option>
+                    <option value="nc_sick_leave">Sick Leave</option>
+                    <option value="nc_maternity_leave">Maternity Leave</option>
+                    <option value="nc_training">Training</option>
+                    <option value="nc_meeting">Internal Engineering Meeting</option>
+                    <option value="nc_other">Others</option>
+                  </optgroup>
                 </select>
               </div>
               <div>
