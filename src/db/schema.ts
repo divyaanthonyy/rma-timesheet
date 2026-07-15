@@ -107,11 +107,60 @@ export const manpowerEntries = sqliteTable('manpower_entries', {
   projectId: text('project_id').notNull().references(() => projects.id),
   month: text('month').notNull(),
   hours: integer('hours').notNull().default(0),
+  estimateHours: integer('estimate_hours'),
+  confirmedHours: integer('confirmed_hours'),
   source: text('source').notNull().default('manual'),
   createdAt: text('created_at').default(sql`(current_timestamp)`),
 }, (table) => ({
   uniqueProjectMonth: unique().on(table.projectId, table.month),
 }))
+
+// ── Archive / Snapshot tables ────────────────────────────────────────────────
+
+export const monthSnapshots = sqliteTable('month_snapshots', {
+  id: text('id').primaryKey(),
+  month: text('month').notNull().unique(),
+  closedAt: text('closed_at').notNull(),
+  closedBy: text('closed_by'),
+  capacityHours: integer('capacity_hours').notNull().default(0),
+  backlogHours: integer('backlog_hours').notNull().default(0),
+  forecastHours: integer('forecast_hours').notNull().default(0),
+  nonChargeHours: integer('non_charge_hours').notNull().default(0),
+  totalLoadingHours: integer('total_loading_hours').notNull().default(0),
+  backlogPct: real('backlog_pct'),
+  forecastPct: real('forecast_pct'),
+  nonChargePct: real('non_charge_pct'),
+})
+
+export const snapshotProjectHours = sqliteTable('snapshot_project_hours', {
+  id: text('id').primaryKey(),
+  snapshotId: text('snapshot_id').notNull().references(() => monthSnapshots.id),
+  projectId: text('project_id'),
+  projectName: text('project_name').notNull(),
+  category: text('category').notNull(),
+  hours: integer('hours').notNull().default(0),
+  source: text('source').notNull().default('manual'),
+})
+
+export const snapshotEmployeeStats = sqliteTable('snapshot_employee_stats', {
+  id: text('id').primaryKey(),
+  snapshotId: text('snapshot_id').notNull().references(() => monthSnapshots.id),
+  userId: text('user_id'),
+  userName: text('user_name').notNull(),
+  capacityHours: integer('capacity_hours').notNull().default(0),
+  billableHours: integer('billable_hours').notNull().default(0),
+  nonChargeHours: integer('non_charge_hours').notNull().default(0),
+  efficiencyPct: real('efficiency_pct'),
+  timesheetStatus: text('timesheet_status'),
+})
+
+export const monthReopenLog = sqliteTable('month_reopen_log', {
+  id: text('id').primaryKey(),
+  month: text('month').notNull(),
+  reopenedBy: text('reopened_by'),
+  reopenedAt: text('reopened_at').notNull(),
+  reason: text('reason').notNull(),
+})
 
 // ── better-auth tables ───────────────────────────────────────────────────────
 

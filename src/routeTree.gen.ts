@@ -20,6 +20,7 @@ import { Route as AdminProjectsRouteImport } from './routes/admin/projects'
 import { Route as AdminManpowerRouteImport } from './routes/admin/manpower'
 import { Route as AdminEmployeesRouteImport } from './routes/admin/employees'
 import { Route as AdminDashboardRouteImport } from './routes/admin/dashboard'
+import { Route as AdminArchiveRouteImport } from './routes/admin/archive'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 import { Route as AdminReviewUserIdRouteImport } from './routes/admin/review.$userId'
 
@@ -78,6 +79,11 @@ const AdminDashboardRoute = AdminDashboardRouteImport.update({
   path: '/dashboard',
   getParentRoute: () => AdminRouteRoute,
 } as any)
+const AdminArchiveRoute = AdminArchiveRouteImport.update({
+  id: '/archive',
+  path: '/archive',
+  getParentRoute: () => AdminRouteRoute,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -94,6 +100,7 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRouteRouteWithChildren
   '/engineer': typeof EngineerRouteRouteWithChildren
   '/login': typeof LoginRoute
+  '/admin/archive': typeof AdminArchiveRoute
   '/admin/dashboard': typeof AdminDashboardRoute
   '/admin/employees': typeof AdminEmployeesRoute
   '/admin/manpower': typeof AdminManpowerRoute
@@ -109,6 +116,7 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRouteRouteWithChildren
   '/engineer': typeof EngineerRouteRouteWithChildren
   '/login': typeof LoginRoute
+  '/admin/archive': typeof AdminArchiveRoute
   '/admin/dashboard': typeof AdminDashboardRoute
   '/admin/employees': typeof AdminEmployeesRoute
   '/admin/manpower': typeof AdminManpowerRoute
@@ -125,6 +133,7 @@ export interface FileRoutesById {
   '/admin': typeof AdminRouteRouteWithChildren
   '/engineer': typeof EngineerRouteRouteWithChildren
   '/login': typeof LoginRoute
+  '/admin/archive': typeof AdminArchiveRoute
   '/admin/dashboard': typeof AdminDashboardRoute
   '/admin/employees': typeof AdminEmployeesRoute
   '/admin/manpower': typeof AdminManpowerRoute
@@ -142,6 +151,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/engineer'
     | '/login'
+    | '/admin/archive'
     | '/admin/dashboard'
     | '/admin/employees'
     | '/admin/manpower'
@@ -157,6 +167,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/engineer'
     | '/login'
+    | '/admin/archive'
     | '/admin/dashboard'
     | '/admin/employees'
     | '/admin/manpower'
@@ -172,6 +183,7 @@ export interface FileRouteTypes {
     | '/admin'
     | '/engineer'
     | '/login'
+    | '/admin/archive'
     | '/admin/dashboard'
     | '/admin/employees'
     | '/admin/manpower'
@@ -270,6 +282,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminDashboardRouteImport
       parentRoute: typeof AdminRouteRoute
     }
+    '/admin/archive': {
+      id: '/admin/archive'
+      path: '/archive'
+      fullPath: '/admin/archive'
+      preLoaderRoute: typeof AdminArchiveRouteImport
+      parentRoute: typeof AdminRouteRoute
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
@@ -288,6 +307,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AdminRouteRouteChildren {
+  AdminArchiveRoute: typeof AdminArchiveRoute
   AdminDashboardRoute: typeof AdminDashboardRoute
   AdminEmployeesRoute: typeof AdminEmployeesRoute
   AdminManpowerRoute: typeof AdminManpowerRoute
@@ -298,6 +318,7 @@ interface AdminRouteRouteChildren {
 }
 
 const AdminRouteRouteChildren: AdminRouteRouteChildren = {
+  AdminArchiveRoute: AdminArchiveRoute,
   AdminDashboardRoute: AdminDashboardRoute,
   AdminEmployeesRoute: AdminEmployeesRoute,
   AdminManpowerRoute: AdminManpowerRoute,

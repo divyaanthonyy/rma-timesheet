@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react'
 import { createServerFn } from '@tanstack/react-start'
 import { getRequestHeaders } from '@tanstack/react-start/server'
 import { auth } from '../../lib/auth'
-import { loadEntriesForMonth, loadUserProjects, upsertEntry, updateTimesheetStatus, loadTimesheetStatus, getUserByEmail, loadTimesheetHistory, loadLeaveDaysForMonth, upsertLeaveDay, deleteLeaveDay } from '../../db/queries'
+import { loadEntriesForMonth, loadUserProjects, upsertEntry, updateTimesheetStatus, loadTimesheetStatus, getUserByEmail, loadTimesheetHistory, loadLeaveDaysForMonth, upsertLeaveDay, deleteLeaveDay, loadOpenPastMonths } from '../../db/queries'
 import { formatHistoryTimestamp, getHistoryEventMeta } from '../../lib/timesheet-history'
 
 export const Route = createFileRoute('/engineer/timesheet')({
@@ -73,6 +73,12 @@ const fetchHistory = createServerFn()
     return loadTimesheetHistory(data.userId, data.month)
   })
 
+const fetchOpenPast = createServerFn()
+  .validator((data: { userId: string }) => data)
+  .handler(async ({ data }) => {
+    return loadOpenPastMonths(data.userId)
+  })
+
 const submitTimesheetFn = createServerFn()
   .validator((d: { userId: string; month: string }) => d)
   .handler(async ({ data }) => {
@@ -121,6 +127,7 @@ export default function TimesheetPage() {
   const [history, setHistory] = useState<Array<{ id: string; eventType: string; note: string | null; createdAt: string | null; performedByUserId: string | null; performedByName: string | null }>>([])
   const [leaveDays, setLeaveDays] = useState<Record<number, 'full' | 'half'>>({})
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; day: number } | null>(null)
+  const [openPastMonths, setOpenPastMonths] = useState<{ month: string; status: string }[]>([])
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -174,6 +181,13 @@ export default function TimesheetPage() {
 
     loadData()
   }, [])
+
+  useEffect(() => {
+    if (!currentUser) return
+    fetchOpenPast({ data: { userId: currentUser.id } }).then((months) => {
+      setOpenPastMonths(months as { month: string; status: string }[])
+    })
+  }, [currentUser])
 
   useEffect(() => {
     function handleClick() {
@@ -302,8 +316,25 @@ export default function TimesheetPage() {
     )
   }
 
+  const monthLabel = (m: string) => {
+    const [y, mm] = m.split('-')
+    const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    return `${names[parseInt(mm) - 1]} ${y}`
+  }
+
   return (
     <div>
+      {openPastMonths.length > 0 && (
+        <div className="bg-amber-950/20 border border-amber-800/40 rounded-xl p-3 mb-6 flex items-center gap-3 flex-wrap">
+          <span className="text-amber-400 text-[10px] font-medium">Pending:</span>
+          {openPastMonths.map((m) => (
+            <span key={m.month} className="text-amber-300 text-xs">
+              {monthLabel(m.month)} — {m.status === 'returned' ? 'returned, needs resubmission' : 'not yet submitted'}
+              <span className="text-amber-500 ml-1 cursor-pointer hover:text-amber-300">→</span>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="flex items-start justify-between mb-6">
         <div>
           <h1 className="text-white text-lg font-medium">My timesheet</h1>

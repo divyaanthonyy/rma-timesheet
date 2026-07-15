@@ -1,7 +1,7 @@
 import { drizzle } from 'drizzle-orm/libsql'
 import { createClient } from '@libsql/client'
 import { eq, and, lte, gte, or, isNull, desc } from 'drizzle-orm'
-import { timesheetEntries, timesheets, userProjects, projects, users, timesheetHistory, leaveDays, manpowerCapacity, manpowerEntries, holidays, nonChargeCategories } from './schema'
+import { timesheetEntries, timesheets, userProjects, projects, users, timesheetHistory, leaveDays, manpowerCapacity, manpowerEntries, holidays, nonChargeCategories, monthSnapshots, snapshotProjectHours, snapshotEmployeeStats, monthReopenLog } from './schema'
 import * as schema from './schema'
 import { nanoid } from 'nanoid'
 import { monthMeta } from '../lib/month'
@@ -183,6 +183,9 @@ export async function upsertEntry(
   date: string,
   hours: number,
 ) {
+  const month = date.slice(0, 7)
+  if (await isMonthClosed(month)) throw new Error(`Month ${month} is closed and cannot be edited`)
+
   const db = getDb()
 
   // check if entry already exists
@@ -239,6 +242,8 @@ export async function updateTimesheetStatus(
   returnNote?: string,
   actor?: { userId: string; name: string } | null,
 ) {
+  if (await isMonthClosed(month)) throw new Error(`Month ${month} is closed and cannot be edited`)
+
   const db = getDb()
   const now = new Date().toISOString()
 
@@ -420,13 +425,29 @@ export async function clearCapacityOverride(month: string) {
   }
 }
 
+async function ensureManpowerEntryColumns() {
+  const client = createClient({
+    url: process.env.TURSO_DATABASE_URL!,
+    authToken: process.env.TURSO_AUTH_TOKEN!,
+  })
+  try {
+    await client.execute("ALTER TABLE manpower_entries ADD COLUMN estimate_hours INTEGER")
+  } catch { /* already exists */ }
+  try {
+    await client.execute("ALTER TABLE manpower_entries ADD COLUMN confirmed_hours INTEGER")
+  } catch { /* already exists */ }
+}
+
 export async function loadManpowerEntries(months: string[]) {
+  await ensureManpowerEntryColumns()
   const db = getDb()
   const rows = await db.select().from(manpowerEntries)
   return rows.filter((r) => months.includes(r.month))
 }
 
 export async function upsertManpowerEntry(projectId: string, month: string, hours: number) {
+  if (await isMonthClosed(month)) throw new Error(`Month ${month} is closed and cannot be edited`)
+  await ensureManpowerEntryColumns()
   const db = getDb()
   const existing = await db
     .select()
@@ -441,17 +462,61 @@ export async function upsertManpowerEntry(projectId: string, month: string, hour
   if (existing.length > 0) {
     await db
       .update(manpowerEntries)
-      .set({ hours, source: 'manual' })
+      .set({ estimateHours: hours, source: 'manual' })
       .where(eq(manpowerEntries.id, existing[0].id))
   } else {
     await db.insert(manpowerEntries).values({
       id: nanoid(),
       projectId,
       month,
-      hours,
+      estimateHours: hours,
       source: 'manual',
     })
   }
+}
+
+export async function confirmManpowerEntry(projectId: string, month: string, hours: number) {
+  if (await isMonthClosed(month)) throw new Error(`Month ${month} is closed and cannot be edited`)
+  await ensureManpowerEntryColumns()
+  const db = getDb()
+  const existing = await db
+    .select()
+    .from(manpowerEntries)
+    .where(
+      and(
+        eq(manpowerEntries.projectId, projectId),
+        eq(manpowerEntries.month, month),
+      ),
+    )
+
+  if (existing.length > 0) {
+    await db
+      .update(manpowerEntries)
+      .set({ confirmedHours: hours, source: 'manual' })
+      .where(eq(manpowerEntries.id, existing[0].id))
+  } else {
+    await db.insert(manpowerEntries).values({
+      id: nanoid(),
+      projectId,
+      month,
+      confirmedHours: hours,
+      source: 'manual',
+    })
+  }
+}
+
+export async function clearConfirmedHours(projectId: string, month: string) {
+  await ensureManpowerEntryColumns()
+  const db = getDb()
+  await db
+    .update(manpowerEntries)
+    .set({ confirmedHours: null })
+    .where(
+      and(
+        eq(manpowerEntries.projectId, projectId),
+        eq(manpowerEntries.month, month),
+      ),
+    )
 }
 
 // Sum timesheet_entries.hours grouped by projectId + month for the given months.
@@ -658,6 +723,119 @@ export async function computeBaseCapacity(months: string[]) {
       }
     }
     result[m] = total * 8
+  }
+
+  return result
+}
+
+export type EngineerBreakdown = {
+  id: string
+  name: string
+  activeDays: number
+  hours: number
+  note: string | null
+}
+
+export type CapacityBreakdown = {
+  total: number
+  daysInMonth: number
+  weekendDays: number
+  workingDays: number
+  holidays: { date: string; name: string }[]
+  engineers: EngineerBreakdown[]
+  excludedEngineers: { name: string; reason: string }[]
+}
+
+// Returns a full breakdown per month (same computation as computeBaseCapacity
+// but with full context for tooltip display).
+export async function computeCapacityBreakdown(months: string[]) {
+  await ensureUserDateColumns()
+  const db = getDb()
+
+  const allUsers = await db.select({
+    id: users.id, name: users.name, role: users.role,
+    isEngineer: users.isEngineer,
+    startDate: users.startDate, endDate: users.endDate,
+  }).from(users)
+
+  const engineers = allUsers.filter((u) => u.role === 'engineer' || u.isEngineer)
+
+  // Load holidays with names
+  let holidayList: { date: string; name: string }[] = []
+  try {
+    const hRows = await db.select({ date: holidays.date, name: holidays.name }).from(holidays)
+    holidayList = hRows
+  } catch { /* table may not exist yet */ }
+  const holidaySet = new Set(holidayList.map((h) => h.date))
+
+  const monthHolidays = (m: string) => holidayList.filter((h) => h.date.startsWith(m))
+
+  const result: Record<string, CapacityBreakdown> = {}
+
+  for (const m of months) {
+    const meta = monthMeta(m)
+    const weekendSet = new Set(meta.weekends)
+    const hols = monthHolidays(m)
+    let totalDays = 0
+
+    const engBreakdown: EngineerBreakdown[] = []
+    const excluded: { name: string; reason: string }[] = []
+
+    for (const eng of engineers) {
+      let active = 0
+      for (const d of meta.days) {
+        const dateStr = `${m}-${String(d).padStart(2, '0')}`
+        if (weekendSet.has(d)) continue
+        if (holidaySet.has(dateStr)) continue
+        if (eng.startDate && dateStr < eng.startDate) continue
+        if (eng.endDate && dateStr > eng.endDate) continue
+        active++
+      }
+
+      if (active > 0) {
+        const notes: string[] = []
+        if (eng.startDate && active < meta.days.length - weekendSet.size - hols.length) {
+          // Only show start note if they started mid-month
+          const firstDay = `${m}-01`
+          if (firstDay < eng.startDate) notes.push(`started ${eng.startDate}`)
+        }
+        if (eng.endDate) {
+          const lastDayOfMonth = `${m}-${String(meta.lastDay).padStart(2, '0')}`
+          if (eng.endDate < lastDayOfMonth) notes.push(`ended ${eng.endDate}`)
+        }
+        engBreakdown.push({
+          id: eng.id,
+          name: eng.name,
+          activeDays: active,
+          hours: active * 8,
+          note: notes.length > 0 ? notes.join(' · ') : null,
+        })
+        totalDays += active
+      } else {
+        let reason = ''
+        if (eng.startDate && `${m}-${String(meta.lastDay).padStart(2, '0')}` < eng.startDate) {
+          reason = `not yet started (starts ${eng.startDate})`
+        } else if (eng.endDate && `${m}-01` > eng.endDate) {
+          reason = `ended ${eng.endDate}`
+        } else if (eng.startDate && eng.startDate > `${m}-01`) {
+          // started after month began but holidays/weekends reduced active to 0
+        } else {
+          reason = '0 working days after holidays'
+        }
+        if (reason) excluded.push({ name: eng.name, reason })
+      }
+    }
+
+    const workingDays = meta.days.length - weekendSet.size - hols.length
+    result[m] = {
+      total: totalDays * 8,
+      daysInMonth: meta.days.length,
+      weekendDays: weekendSet.size,
+      workingDays,
+      holidays: hols,
+      engineers: engBreakdown,
+      excludedEngineers: excluded,
+    }
   }
 
   return result
@@ -947,6 +1125,56 @@ export async function loadTotalHoursPerUser(month: string) {
   return totals
 }
 
+// Load per-employee actual hours split by category (billable vs non-charge) for given months.
+// Returns: { [userId]: { [month]: { billable: number, nonCharge: number, allApproved: boolean } } }
+export async function loadEmployeeActualHours(months: string[]) {
+  const db = getDb()
+
+  // Load all projects for category lookup
+  const allProjects = await db.select({ id: projects.id, category: projects.category }).from(projects)
+  const projCategory: Record<string, string> = {}
+  for (const p of allProjects) projCategory[p.id] = p.category ?? 'backlog'
+
+  // Load all timesheets (approval status per user+month)
+  const allTimesheets = await db
+    .select({ userId: timesheets.userId, month: timesheets.month, status: timesheets.status })
+    .from(timesheets)
+  const approvedMonths: Record<string, Set<string>> = {}
+  for (const t of allTimesheets) {
+    if (t.status === 'approved') {
+      if (!approvedMonths[t.userId]) approvedMonths[t.userId] = new Set()
+      approvedMonths[t.userId].add(t.month)
+    }
+  }
+
+  // Load timesheet entries
+  const entries = await db.select().from(timesheetEntries)
+  const result: Record<string, Record<string, { billable: number; nonCharge: number; allApproved: boolean }>> = {}
+
+  for (const entry of entries) {
+    const m = entry.date.slice(0, 7)
+    if (!months.includes(m)) continue
+
+    if (!result[entry.userId]) result[entry.userId] = {}
+    if (!result[entry.userId][m]) result[entry.userId][m] = { billable: 0, nonCharge: 0, allApproved: true }
+
+    const cat = projCategory[entry.projectId] ?? 'backlog'
+    const isBillable = cat === 'backlog' || cat === 'forecast'
+    if (isBillable) {
+      result[entry.userId][m].billable += entry.hours
+    } else {
+      result[entry.userId][m].nonCharge += entry.hours
+    }
+
+    // Track approval: if any entry is in a not-fully-approved month, mark false
+    if (!approvedMonths[entry.userId]?.has(m)) {
+      result[entry.userId][m].allApproved = false
+    }
+  }
+
+  return result
+}
+
 export async function deleteUser(id: string) {
   const db = getDb()
   // delete related rows first
@@ -983,4 +1211,117 @@ export async function getUserByEmail(email: string) {
     .from(users)
     .where(eq(users.email, email))
   return result[0] ?? null
+}
+
+// ── Archive / Snapshot functions ─────────────────────────────────────────────
+
+export async function isMonthClosed(month: string) {
+  const db = getDb()
+  const rows = await db.select({ id: monthSnapshots.id }).from(monthSnapshots).where(eq(monthSnapshots.month, month))
+  return rows.length > 0
+}
+
+export async function loadAllSnapshots() {
+  const db = getDb()
+  const snapshots = await db.select().from(monthSnapshots).orderBy(desc(monthSnapshots.month))
+  const reopenLogs = await db.select().from(monthReopenLog).orderBy(desc(monthReopenLog.reopenedAt))
+  return { snapshots, reopenLogs }
+}
+
+export async function loadSnapshot(month: string) {
+  const db = getDb()
+  const snapshots = await db.select().from(monthSnapshots).where(eq(monthSnapshots.month, month))
+  if (snapshots.length === 0) return null
+  const snapshot = snapshots[0]
+  const projectHours = await db.select().from(snapshotProjectHours).where(eq(snapshotProjectHours.snapshotId, snapshot.id))
+  const employeeStats = await db.select().from(snapshotEmployeeStats).where(eq(snapshotEmployeeStats.snapshotId, snapshot.id))
+  const reopenLogs = await db.select().from(monthReopenLog).where(eq(monthReopenLog.month, month)).orderBy(desc(monthReopenLog.reopenedAt))
+  return { snapshot, projectHours, employeeStats, reopenLogs }
+}
+
+export async function closeMonth(
+  month: string,
+  closedBy: string,
+  capacityHours: number,
+  backlogHours: number,
+  forecastHours: number,
+  nonChargeHours: number,
+  totalLoadingHours: number,
+  backlogPct: number | null,
+  forecastPct: number | null,
+  nonChargePct: number | null,
+  projectRows: { projectId: string; projectName: string; category: string; hours: number; source: string }[],
+  employeeRows: { userId: string; userName: string; capacityHours: number; billableHours: number; nonChargeHours: number; efficiencyPct: number | null; timesheetStatus: string | null }[],
+) {
+  const db = getDb()
+  const existing = await db.select().from(monthSnapshots).where(eq(monthSnapshots.month, month))
+  if (existing.length > 0) {
+    // Delete old snapshot data for re-close
+    await db.delete(snapshotProjectHours).where(eq(snapshotProjectHours.snapshotId, existing[0].id))
+    await db.delete(snapshotEmployeeStats).where(eq(snapshotEmployeeStats.snapshotId, existing[0].id))
+    await db.delete(monthSnapshots).where(eq(monthSnapshots.id, existing[0].id))
+  }
+
+  const snapshotId = nanoid()
+  await db.insert(monthSnapshots).values({
+    id: snapshotId,
+    month,
+    closedAt: new Date().toISOString(),
+    closedBy,
+    capacityHours,
+    backlogHours,
+    forecastHours,
+    nonChargeHours,
+    totalLoadingHours,
+    backlogPct,
+    forecastPct,
+    nonChargePct,
+  })
+
+  for (const row of projectRows) {
+    await db.insert(snapshotProjectHours).values({
+      id: nanoid(), snapshotId,
+      projectId: row.projectId, projectName: row.projectName,
+      category: row.category, hours: row.hours, source: row.source,
+    })
+  }
+
+  for (const row of employeeRows) {
+    await db.insert(snapshotEmployeeStats).values({
+      id: nanoid(), snapshotId,
+      userId: row.userId, userName: row.userName,
+      capacityHours: row.capacityHours, billableHours: row.billableHours,
+      nonChargeHours: row.nonChargeHours, efficiencyPct: row.efficiencyPct,
+      timesheetStatus: row.timesheetStatus,
+    })
+  }
+}
+
+export async function reopenMonth(month: string, reopenedBy: string, reason: string) {
+  const db = getDb()
+  const existing = await db.select().from(monthSnapshots).where(eq(monthSnapshots.month, month))
+  if (existing.length > 0) {
+    await db.delete(snapshotProjectHours).where(eq(snapshotProjectHours.snapshotId, existing[0].id))
+    await db.delete(snapshotEmployeeStats).where(eq(snapshotEmployeeStats.snapshotId, existing[0].id))
+    await db.delete(monthSnapshots).where(eq(monthSnapshots.id, existing[0].id))
+  }
+  await db.insert(monthReopenLog).values({
+    id: nanoid(), month, reopenedBy, reopenedAt: new Date().toISOString(), reason,
+  })
+}
+
+export async function loadOpenPastMonths(userId: string) {
+  const db = getDb()
+  const allClosed = await db.select({ month: monthSnapshots.month }).from(monthSnapshots)
+  const closedSet = new Set(allClosed.map((r) => r.month))
+  const currentMonth = new Date().toISOString().slice(0, 7)
+
+  const userTimesheets = await db
+    .select({ month: timesheets.month, status: timesheets.status })
+    .from(timesheets)
+    .where(eq(timesheets.userId, userId))
+
+  return userTimesheets
+    .filter((t) => t.month < currentMonth && !closedSet.has(t.month) && (t.status === 'returned' || t.status === 'draft'))
+    .sort((a, b) => b.month.localeCompare(a.month))
 }
